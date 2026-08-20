@@ -1,0 +1,1 @@
+Waiver support: the /espn/waivers endpoint exposes FREEAGENT and WAIVERS players for the current scoring period, and the AI GM receives the same live waiver pool when analyzing add/drop decisions.
