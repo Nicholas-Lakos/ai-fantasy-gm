@@ -1,0 +1,9 @@
+{
+  "name": "AI Fantasy GM",
+  "short_name": "Fantasy GM",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#080c18",
+  "theme_color": "#080c18",
+  "description": "Your ESPN Fantasy Baseball command center."
+}
