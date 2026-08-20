@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel,EmailStr,Field
 BASE=os.path.dirname(os.path.abspath(__file__));ROOT=os.path.dirname(BASE);DB=os.getenv('DATABASE_PATH',os.path.join(BASE,'fantasy_gm.db'))
 ESPN_BASE='https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb/seasons';OR_BASE='https://openrouter.ai/api/v1/chat/completions';OR_MODEL=os.getenv('OPENROUTER_MODEL','openrouter/free')
-POS={1:'SP',2:'C',3:'1B',4:'2B',5:'3B',6:'SS',7:'LF',8:'CF',9:'RF',10:'OF',11:'DH',12:'RP'};SLOT={12:'BENCH',13:'SP',14:'RP',15:'P',17:'P'}
+POS={1:'SP',2:'C',3:'1B',4:'2B',5:'3B',6:'SS',7:'LF',8:'CF',9:'RF',10:'OF',11:'DH',12:'RP'};SLOT={0:'C',1:'1B',2:'2B',3:'3B',4:'SS',5:'OF',7:'UTIL',12:'BENCH',13:'SP',14:'RP',15:'P',17:'P'}
 def db():
  c=sqlite3.connect(DB,timeout=15);c.row_factory=sqlite3.Row;c.execute('CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,name TEXT NOT NULL)');c.execute('CREATE TABLE IF NOT EXISTS leagues(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,league_id TEXT NOT NULL,team_id INTEGER NOT NULL,season INTEGER NOT NULL,espn_s2 TEXT,swid TEXT,league_name TEXT,context_json TEXT,updated_at TEXT)');c.execute('CREATE TABLE IF NOT EXISTS ai_messages(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,role TEXT NOT NULL,content TEXT NOT NULL,created_at TEXT NOT NULL)');c.commit();return c
 def ph(p,s=None):s=s or secrets.token_hex(16);return f'pbkdf2$210000${s}${hashlib.pbkdf2_hmac("sha256",p.encode(),s.encode(),210000).hex()}'
@@ -24,7 +24,7 @@ class Auth(BaseModel):email:EmailStr;password:str=Field(min_length=6);name:str='
 class ESPNConnect(BaseModel):league_id:str;team_id:int=9;season:int=2026;espn_s2:Optional[str]=None;swid:Optional[str]=None
 class Question(BaseModel):question:str=Field(min_length=1,max_length=4000)
 def req_for(row):return ESPNConnect(league_id=row['league_id'],team_id=row['team_id'],season=row['season'],espn_s2=row['espn_s2'],swid=row['swid'])
-async def espn(req,views=None,period=None,filter_body=None,timeout=20):
+async def espn(req,views=None,period=None,filter_body=None,timeout=25):
  url=f'{ESPN_BASE}/{req.season}/segments/0/leagues/{req.league_id}';params=[('view',v) for v in (views or [])]
  if period is not None:params.append(('scoringPeriodId',str(period)))
  cookies={};
@@ -41,7 +41,7 @@ def period(d):
   for k in ('scoringPeriodId','currentScoringPeriodId','currentScoringPeriod'):
    v=o.get(k);v=v.get('id') if isinstance(v,dict) else v
    if isinstance(v,int) or (isinstance(v,str) and v.isdigit()):return int(v)
- return None
+ v=d.get('scoringPeriodId');return int(v) if isinstance(v,(int,str)) and str(v).isdigit() else None
 def team_name(t):return t.get('name') or t.get('location') or t.get('nickname') or f"Team {t.get('id')}"
 def rec(t):return ((t.get('record') or {}).get('overall') or {})
 def compact_player(e):
@@ -58,20 +58,29 @@ def league_row(u):
  if not x:raise HTTPException(404,'Connect an ESPN league first')
  return x
 async def pool(req,p,limit=500):
- async def one(status):return await espn(req,['kona_player_info'],p,{'players':{'filterStatus':{'value':[status]},'limit':limit,'sortPercOwned':{'sortPriority':1,'sortAsc':False}}})
- results=await asyncio.gather(one('FREEAGENT'),one('WAIVERS'),return_exceptions=True);out={}
- for d in results:
-  if isinstance(d,Exception):continue
-  for x in d.get('players',[]):
-   pl=x.get('player') or {};pe=x.get('playerPoolEntry') or {};pid=x.get('id') or pl.get('id')
-   if not pid:continue
-   out[pid]={'id':pid,'name':pl.get('fullName') or f'Player {pid}','position':POS.get(pl.get('defaultPositionId'),'—'),'eligible_positions':[POS.get(v,'—') for v in pl.get('eligibleSlots',[]) if v in POS],'injury_status':pl.get('injuryStatus'),'total_points':pe.get('totalPoints'),'percent_owned':pe.get('percentOwned'),'percent_started':pe.get('percentStarted'),'rank':pe.get('rank'),'status':pe.get('status') or x.get('status') or 'FREEAGENT','pro_team_id':pl.get('proTeamId')}
+ filters={'players':{'filterStatus':{'value':['FREEAGENT','WAIVERS']},'limit':limit,'sortPercOwned':{'sortPriority':1,'sortAsc':False}}}
+ try:
+  d=await espn(req,['kona_player_info'],p,filters,timeout=35)
+  items=d.get('players') or []
+ except Exception:
+  items=[]
+ if not items:
+  try:
+   d=await espn(req,['kona_player_info'],p,{'players':{'limit':limit,'sortPercOwned':{'sortPriority':1,'sortAsc':False}}},timeout=35)
+   items=[x for x in (d.get('players') or []) if ((x.get('playerPoolEntry') or {}).get('status') in ('FREEAGENT','WAIVERS') or x.get('status') in ('FREEAGENT','WAIVERS'))]
+  except Exception:items=[]
+ out={}
+ for x in items:
+  pl=x.get('player') or {};pe=x.get('playerPoolEntry') or {};pid=x.get('id') or pl.get('id')
+  if not pid:continue
+  status=pe.get('status') or x.get('status') or 'FREEAGENT'
+  out[pid]={'id':pid,'name':pl.get('fullName') or f'Player {pid}','position':POS.get(pl.get('defaultPositionId'),'—'),'eligible_positions':[POS.get(v,'—') for v in pl.get('eligibleSlots',[]) if v in POS],'injury_status':pl.get('injuryStatus'),'total_points':pe.get('totalPoints'),'percent_owned':pe.get('percentOwned'),'percent_started':pe.get('percentStarted'),'rank':pe.get('rank'),'status':status,'pro_team_id':pl.get('proTeamId')}
  return list(out.values())
 async def live(u,waivers=False):
  l=league_row(u);req=req_for(l);meta=await espn(req,['mSettings','mTeam','mStandings','mStatus']);p=period(meta)
  if p is None:raise HTTPException(502,'ESPN did not provide the current scoring period.')
- rt=espn(req,['mTeam','mRoster','mStandings','mStatus'],p);pt=pool(req,p) if waivers else None
- if pt is not None:d,w=await asyncio.gather(rt,pt)
+ rt=espn(req,['mTeam','mRoster','mStandings','mStatus'],p)
+ if waivers:d,w=await asyncio.gather(rt,pool(req,p))
  else:d=await rt;w=[]
  d['settings']=meta.get('settings') or d.get('settings') or {};d['scoringPeriodId']=p;return l,req,d,p,w
 async def player_card(req,pid,p):
@@ -80,12 +89,11 @@ async def player_card(req,pid,p):
  if not items:raise HTTPException(404,'Player not found in ESPN player pool')
  x=items[0];pl=x.get('player') or {};pe=x.get('playerPoolEntry') or {};stats={};current=0
  for s in pe.get('stats',[]) or []:
-  if s.get('seasonId')==req.season and s.get('statTypeId',0)==0:
-   stats.update(s.get('appliedStats') or {});current=max(current,float(s.get('appliedTotal') or 0))
- return {'id':pid,'name':pl.get('fullName'),'position':POS.get(pl.get('defaultPositionId'),'—'),'eligible_positions':[POS.get(v,'—') for v in pl.get('eligibleSlots',[]) if v in POS],'pro_team_id':pl.get('proTeamId'),'injury_status':pl.get('injuryStatus'),'active':pl.get('active'), 'total_points':pe.get('totalPoints'),'current_period_points':current,'percent_owned':pe.get('percentOwned'),'percent_started':pe.get('percentStarted'),'stats':stats,'raw_stat_count':len(stats)}
-app=FastAPI(title='AI Fantasy GM',version='11.0');app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_methods=['*'],allow_headers=['*'])
+  if s.get('seasonId')==req.season and s.get('statTypeId',0)==0:stats.update(s.get('appliedStats') or {});current=max(current,float(s.get('appliedTotal') or 0))
+ return {'id':pid,'name':pl.get('fullName'),'position':POS.get(pl.get('defaultPositionId'),'—'),'eligible_positions':[POS.get(v,'—') for v in pl.get('eligibleSlots',[]) if v in POS],'pro_team_id':pl.get('proTeamId'),'injury_status':pl.get('injuryStatus'),'active':pl.get('active'),'total_points':pe.get('totalPoints'),'current_period_points':current,'percent_owned':pe.get('percentOwned'),'percent_started':pe.get('percentStarted'),'stats':stats,'raw_stat_count':len(stats)}
+app=FastAPI(title='AI Fantasy GM',version='11.1');app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_methods=['*'],allow_headers=['*'])
 @app.get('/health')
-def health():return {'ok':True,'version':'11.0','ai_provider':'openrouter-free','ai_configured':bool(os.getenv('OPENROUTER_API_KEY'))}
+def health():return {'ok':True,'version':'11.1','ai_provider':'openrouter-free','ai_configured':bool(os.getenv('OPENROUTER_API_KEY'))}
 @app.post('/auth/signup')
 def signup(a:Auth):
  c=db()
@@ -97,6 +105,9 @@ def login(a:Auth):
  u=db().execute('SELECT * FROM users WHERE email=?',(a.email.lower(),)).fetchone()
  if not u or not pv(a.password,u['password_hash']):raise HTTPException(401,'Invalid email or password')
  return {'token':token(u['id']),'user':{'id':u['id'],'email':u['email'],'name':u['name']}}
+@app.get('/auth/me')
+def me(authorization:str=Header(None)):
+ u=db().execute('SELECT id,email,name FROM users WHERE id=?',(uid(authorization),)).fetchone();return {'user':dict(u)}
 @app.post('/espn/connect')
 async def connect(r:ESPNConnect,authorization:str=Header(None)):
  u=uid(authorization);m=await espn(r,['mSettings','mTeam','mStandings','mStatus']);name=(m.get('settings') or {}).get('name') or 'ESPN Fantasy League';c=db();c.execute('DELETE FROM leagues WHERE user_id=?',(u,));c.execute('INSERT INTO leagues(user_id,league_id,team_id,season,espn_s2,swid,league_name,context_json,updated_at) VALUES(?,?,?,?,?,?,?,?,?)',(u,r.league_id,r.team_id,r.season,r.espn_s2,r.swid,name,json.dumps(m),datetime.utcnow().isoformat()));c.commit();ss,rank=standings(m,r.team_id);return {'connected':True,'name':name,'teams':len(ss),'rank':rank}
@@ -112,6 +123,8 @@ async def team(team_id:int,authorization:str=Header(None)):
  u=uid(authorization);l,r,d,p,_=await live(u);t=next((x for x in d.get('teams',[]) if x.get('id')==team_id),None)
  if not t:raise HTTPException(404,'That team was not found')
  ss,rank=standings(d,team_id);return {'team':compact_team(t),'rank':rank,'standings':ss,'scoring_period':p}
+@app.get('/espn/my-team')
+async def myteam(authorization:str=Header(None)):return await dashboard(authorization)
 @app.get('/espn/waivers')
 async def waivers(authorization:str=Header(None)):
  u=uid(authorization);l,r,d,p,w=await live(u,True);w.sort(key=lambda x:(x.get('total_points') or 0),reverse=True);return {'scoring_period':p,'players':w,'count':len(w),'live_data':True}
