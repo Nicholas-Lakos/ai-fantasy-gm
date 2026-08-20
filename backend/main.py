@@ -9,7 +9,6 @@ from pydantic import BaseModel,EmailStr,Field
 
 BASE=os.path.dirname(os.path.abspath(__file__));ROOT=os.path.dirname(BASE);DB=os.getenv('DATABASE_PATH',os.path.join(BASE,'fantasy_gm.db'))
 ESPN_BASE='https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb/seasons';OR_BASE='https://openrouter.ai/api/v1/chat/completions'
-# openrouter/free dynamically chooses among currently available free models; this is preferable to pinning a model that may disappear.
 OR_MODEL=os.getenv('OPENROUTER_MODEL','openrouter/free')
 POS={1:'SP',2:'C',3:'1B',4:'2B',5:'3B',6:'SS',7:'LF',8:'CF',9:'RF',10:'OF',11:'DH',12:'RP'}
 SLOT={0:'C',1:'1B',2:'2B',3:'3B',4:'SS',5:'OF',7:'UTIL',12:'BENCH',13:'SP',14:'RP',15:'P',17:'P'}
@@ -76,45 +75,59 @@ def league_row(u):
  if not x:raise HTTPException(404,'Connect an ESPN league first')
  return x
 
+async def free_players(req,period):
+ if period is None:return []
+ try:
+  filters=[]
+  for status in ('FREEAGENT','WAIVERS'):
+   filters.append(espn(req,['kona_player_info'],period,{'players':{'filterStatus':{'value':[status]},'limit':500,'sortPercOwned':{'sortPriority':1,'sortAsc':False}}}))
+  results=await asyncio.gather(*filters,return_exceptions=True);out={}
+  for d in results:
+   if isinstance(d,Exception):continue
+   for x in d.get('players',[]) or []:
+    p=x.get('player') or {};pool=x.get('playerPoolEntry') or {};pid=x.get('id') or p.get('id')
+    if not pid:continue
+    status=pool.get('status') or x.get('status') or 'FREEAGENT'
+    out[pid]={'id':pid,'name':p.get('fullName') or f'Player {pid}','position':POS.get(p.get('defaultPositionId'),'—'),'eligible_positions':[POS.get(v,'—') for v in (p.get('eligibleSlots') or []) if v in POS],'injury_status':p.get('injuryStatus'),'total_points':pool.get('totalPoints'),'percent_owned':pool.get('percentOwned'),'percent_started':pool.get('percentStarted'),'rank':pool.get('rank'),'status':status,'pro_team_id':p.get('proTeamId')}
+  return list(out.values())
+ except Exception:return []
+
 async def live(u,need_waivers=False):
  l=league_row(u);req=ESPNConnect(league_id=l['league_id'],team_id=l['team_id'],season=l['season'],espn_s2=l['espn_s2'],swid=l['swid'])
  meta=await espn(req,['mSettings','mTeam','mStandings','mStatus']);period=current_period(meta)
  if period is None:raise HTTPException(502,'ESPN did not provide the current scoring period.')
- roster_task=espn(req,['mTeam','mRoster','mStandings','mStatus'],period)
- waiver_task=free_players(req,period) if need_waivers else None
+ roster_task=espn(req,['mTeam','mRoster','mStandings','mStatus'],period);waiver_task=free_players(req,period) if need_waivers else None
  if waiver_task is not None:roster_data,waivers=await asyncio.gather(roster_task,waiver_task)
  else:roster_data=await roster_task;waivers=[]
  roster_data['settings']=meta.get('settings') or roster_data.get('settings') or {};roster_data['scoringPeriodId']=period
  c=db();c.execute('UPDATE leagues SET context_json=?,updated_at=? WHERE id=?',(json.dumps(roster_data),datetime.utcnow().isoformat(),l['id']));c.commit()
  return l,req,roster_data,period,waivers
 
-async def free_players(req,period):
- if period is None:return []
- try:
-  d=await espn(req,['kona_player_info'],period,{'players':{'filterStatus':{'value':['FREEAGENT','WAIVERS']},'limit':150,'sortPercOwned':{'sortPriority':1,'sortAsc':False}}})
-  out=[]
-  for x in d.get('players',[]) or []:
-   p=x.get('player') or {};pool=x.get('playerPoolEntry') or {};pid=x.get('id') or p.get('id');status=pool.get('status') or x.get('status') or 'FREEAGENT'
-   out.append({'id':pid,'name':p.get('fullName') or f'Player {pid}','position':POS.get(p.get('defaultPositionId'),'—'),'eligible_positions':[POS.get(v,'—') for v in (p.get('eligibleSlots') or []) if v in POS],'injury_status':p.get('injuryStatus'),'total_points':pool.get('totalPoints'),'percent_owned':pool.get('percentOwned'),'percent_started':pool.get('percentStarted'),'rank':pool.get('rank'),'status':status,'pro_team_id':p.get('proTeamId')})
-  return out
- except Exception:return []
-
+def player_words(name):return set(re.findall(r"[a-z0-9]+",name.lower()))
 def relevant_context(question,teams,waivers,my_id):
- q=question.lower();tokens=set(re.findall(r"[a-z0-9']+",q))
- all_players=[]
+ q=question.lower();tokens=set(re.findall(r"[a-z0-9]+",q));my=next((t for t in teams if t['id']==my_id),None);opps=[t for t in teams if t['id']!=my_id]
+ roster_index=[]
  for t in teams:
-  for p in t.get('roster',[]):all_players.append((t,p))
- # Always keep complete user's roster. For opponents, keep full rosters for trade/target questions, otherwise compact to likely-mentioned players.
- my=next((t for t in teams if t['id']==my_id),None);opps=[t for t in teams if t['id']!=my_id]
- trade_words=('trade','target','opponent','other team','manager','offer')
- if any(w in q for w in trade_words):selected_opps=opps
- else:
-  selected_opps=[]
-  for t in opps:
-   if any(tok in t['name'].lower().split() or tok in t.get('nickname','').lower().split() for tok in tokens):selected_opps.append(t)
- # Keep waiver candidates most useful by points/rank/ownership. The live pool is authoritative; 60 is enough for reasoning and much faster than 150.
- ws=sorted(waivers,key=lambda p:((p.get('total_points') or 0),(p.get('rank') or 9999),-(p.get('percent_owned') or 0)),reverse=True)[:60]
- return {'my_team':my,'opponent_teams':selected_opps,'waivers':ws,'waiver_pool_count':len(waivers),'all_opponent_count':len(opps)}
+  for p in t.get('roster',[]):roster_index.append({'player':p['name'],'team':t['name'],'team_id':t['id'],'position':p.get('position'),'points':p.get('total_points'),'status':p.get('roster_status')})
+ trade_words=('trade','target','opponent','other team','manager','offer','who owns','whose team')
+ use_all_opps=any(w in q for w in trade_words)
+ selected_opps=opps if use_all_opps else []
+ # If a player/team is named, include the exact owning team even for non-trade questions.
+ for t in opps:
+  if any(tok in t['name'].lower() for tok in tokens if len(tok)>2):
+   if t not in selected_opps:selected_opps.append(t)
+ # Always give the AI an ownership directory, so it can answer "who has Player X?" without guessing.
+ ownership=roster_index
+ # Keep a large live waiver pool for ranking questions, but always inject exact name matches from the full pool.
+ ranked=sorted(waivers,key=lambda p:((p.get('total_points') or 0),(p.get('rank') or 9999),-(p.get('percent_owned') or 0)),reverse=True)
+ exact=[]
+ for p in waivers:
+  words=player_words(p['name'])
+  if words and words.intersection(tokens):exact.append(p)
+ ws=[];seen=set()
+ for p in exact+ranked[:100]:
+  if p['id'] not in seen:seen.add(p['id']);ws.append(p)
+ return {'my_team':my,'opponent_teams':selected_opps,'player_ownership_index':ownership,'waivers':ws,'waiver_pool_count':len(waivers),'all_opponent_count':len(opps)}
 
 async def ai_call(system,prompt):
  key=os.getenv('OPENROUTER_API_KEY')
@@ -126,7 +139,7 @@ async def ai_call(system,prompt):
  async with httpx.AsyncClient(timeout=45,follow_redirects=True) as c:
   for model in models:
    try:
-    payload={'model':model,'messages':[{'role':'system','content':system},{'role':'user','content':prompt}],'max_tokens':1200,'temperature':0.15}
+    payload={'model':model,'messages':[{'role':'system','content':system},{'role':'user','content':prompt}],'max_tokens':1400,'temperature':0.12}
     if model=='openrouter/free':payload['reasoning']={'effort':'medium'}
     r=await c.post(OR_BASE,headers={'Authorization':f'Bearer {key}','Content-Type':'application/json','HTTP-Referer':'https://ai-fantasy-gm.onrender.com','X-Title':'AI Fantasy GM'},json=payload)
     if r.status_code>=400:
@@ -139,9 +152,9 @@ async def ai_call(system,prompt):
    except Exception as e:last=str(e)
  raise HTTPException(502,'AI service error: '+last)
 
-app=FastAPI(title='AI Fantasy GM',version='9.0');app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_methods=['*'],allow_headers=['*'])
+app=FastAPI(title='AI Fantasy GM',version='10.0');app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_methods=['*'],allow_headers=['*'])
 @app.get('/health')
-def health():return {'ok':True,'app':'AI Fantasy GM','version':'9.0','ai_provider':'openrouter-free','ai_configured':bool(os.getenv('OPENROUTER_API_KEY'))}
+def health():return {'ok':True,'app':'AI Fantasy GM','version':'10.0','ai_provider':'openrouter-free','ai_configured':bool(os.getenv('OPENROUTER_API_KEY'))}
 @app.post('/auth/signup')
 def signup(a:Auth):
  c=db()
@@ -183,10 +196,10 @@ async def gm(q:Question,authorization:str=Header(None)):
  u=uid(authorization);l,req,d,period,waivers=await live(u,True);ss,rank=summary(d,l['team_id']);teams_all=[compact_team(x) for x in d.get('teams',[]) or []];rel=relevant_context(q.question,teams_all,waivers,l['team_id'])
  c=db();rows=c.execute('SELECT role,content FROM ai_messages WHERE user_id=? ORDER BY id DESC LIMIT 8',(u,)).fetchall();history=list(reversed([dict(x) for x in rows]))
  ctx={'league':(d.get('settings') or {}).get('name'),'season':d.get('seasonId',l['season']),'scoring_period':period,'data_timestamp':datetime.utcnow().isoformat(),'standings':ss,'scoring_settings':(d.get('settings') or {}).get('scoringSettings'),'roster_settings':(d.get('settings') or {}).get('rosterSettings'),**rel}
- system='You are AI Fantasy GM, an elite fantasy baseball decision engine. Answer the user directly and quickly. Never output safety classifications, moderation labels, policy text, or "User Safety". LIVE ESPN DATA below is authoritative and was fetched immediately before this request. Never invent players, stats, injuries, positions, standings, or transactions. Use MY TEAM for roster-fit decisions. Use LIVE WAIVERS for waiver decisions. For trades, use opponent rosters and identify the specific manager/team. For lineup questions respect actual eligibility and lineup status. If the data does not contain something, say that rather than guessing. Give a clear recommendation first, then 2-4 concise reasons. For trades explicitly use ACCEPT, DECLINE, or COUNTER. For waivers give the best adds and who to drop when the data supports it. Consider league scoring and roster settings.'
- prompt='CURRENT ESPN FANTASY BASEBALL DATA:\n'+json.dumps(ctx,separators=(',',':'))+'\nRECENT CONVERSATION:\n'+json.dumps(history,separators=(',',':'))+'\nUSER QUESTION:\n'+q.question
+ system='You are AI Fantasy GM, an elite fantasy baseball decision engine. The first job is DATA ACCURACY, the second is analysis. The CURRENT ESPN DATA is authoritative and was fetched immediately before this request. Treat player_ownership_index as the authoritative answer to who owns a player and waivers as the authoritative answer to who is available. A player cannot be both rostered and on waivers. Never invent players, stats, teams, injuries, positions, or availability. Before answering, identify the relevant players in the supplied data and reason from them. For waiver questions, use the live waiver pool first, then compare adds against MY TEAM. For trade questions, use the owning team and that team roster. For lineup questions respect eligibility and roster slots. Apply league scoring and roster settings. Give the recommendation first, then concise evidence. Trades must be ACCEPT, DECLINE, or COUNTER. Waiver advice should name the add and drop when supported. Never output safety classifications, moderation labels, policy text, or User Safety.'
+ prompt='CURRENT LIVE ESPN FANTASY BASEBALL DATA:\n'+json.dumps(ctx,separators=(',',':'))+'\nRECENT CONVERSATION:\n'+json.dumps(history,separators=(',',':'))+'\nUSER QUESTION:\n'+q.question
  answer,model=await ai_call(system,prompt);now=datetime.utcnow().isoformat();c.execute('INSERT INTO ai_messages(user_id,role,content,created_at) VALUES(?,?,?,?)',(u,'user',q.question,now));c.execute('INSERT INTO ai_messages(user_id,role,content,created_at) VALUES(?,?,?,?)',(u,'assistant',answer,now));c.commit()
- return {'answer':answer,'context':{'league':ctx['league'],'scoring_period':period,'rank':rank,'my_roster_players':len((rel.get('my_team') or {}).get('roster',[])),'opponent_teams_used':len(rel.get('opponent_teams',[])),'all_opponent_teams':rel.get('all_opponent_count',0),'live_waiver_players_used':len(rel.get('waivers',[])),'live_waiver_pool_count':rel.get('waiver_pool_count',0),'live_data':True,'model':model,'timestamp':now}}
+ return {'answer':answer,'context':{'league':ctx['league'],'scoring_period':period,'rank':rank,'my_roster_players':len((rel.get('my_team') or {}).get('roster',[])),'opponent_teams_used':len(rel.get('opponent_teams',[])),'all_opponent_teams':rel.get('all_opponent_count',0),'live_waiver_players_used':len(rel.get('waivers',[])),'live_waiver_pool_count':rel.get('waiver_pool_count',0),'ownership_index_players':len(rel.get('player_ownership_index',[])),'live_data':True,'model':model,'timestamp':now}}
 @app.get('/')
 def home():return FileResponse(os.path.join(ROOT,'frontend','index.html'))
 @app.on_event('startup')
