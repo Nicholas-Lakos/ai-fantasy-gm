@@ -1,0 +1,1 @@
+Temporary branch marker for the AI Fantasy GM redesign.
