@@ -1,149 +1,86 @@
-"""Live MLB enrichment for the AI Fantasy GM.
-Loaded automatically by Python from the application root. It enriches the existing
-OpenRouter prompt with current MLB stats, recent news, and team-needs profiles.
-"""
-import asyncio, datetime, json, re
-try:
-    import httpx
-except Exception:
-    httpx = None
+import json, asyncio
+import httpx
+from starlette.responses import Response
+from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi import FastAPI
 
-_ORIGINAL_POST = None
+_ORIG_INIT = FastAPI.__init__
+POS_FIX = {1:'SP', 2:'C', 3:'1B', 4:'2B', 5:'3B', 6:'SS', 7:'LF', 8:'CF', 9:'RF', 10:'OF', 11:'DH', 12:'RP', 13:'P'}
+SLOT_FIX = {0:'C',1:'1B',2:'2B',3:'3B',4:'SS',5:'OF',6:'UTIL',7:'UTIL',8:'UTIL',12:'BENCH',13:'SP',14:'RP',15:'P',16:'IL',17:'P',18:'IL',19:'IL'}
 
+def _positions(p):
+    eligible = p.get('eligibleSlots') or []
+    vals=[]
+    for x in eligible:
+        label=SLOT_FIX.get(x)
+        if label and label not in vals and label not in ('UTIL','BENCH','IL'):
+            vals.append(label)
+    default=POS_FIX.get(p.get('defaultPositionId'))
+    if default and default not in vals: vals.insert(0,default)
+    return default or '—', vals
 
-def _names_from_prompt(prompt):
-    try:
-        marker = 'LIVE ESPN DATA:\n'
-        if marker not in prompt:
-            return []
-        raw = prompt.split(marker, 1)[1].split('\nRECENT CHAT:', 1)[0]
-        data = json.loads(raw)
-        names = []
-        seen = set()
-        def add(v):
-            if not v or not isinstance(v, str): return
-            v = v.strip()
-            if len(v) < 4 or v in seen: return
-            seen.add(v); names.append(v)
-        for p in (data.get('my_team') or {}).get('roster', []): add(p.get('name'))
-        for t in data.get('opponent_teams', []):
-            for p in t.get('roster', []): add(p.get('name'))
-        for p in data.get('live_waivers', []): add(p.get('name'))
-        return names
-    except Exception:
-        return []
-
-
-def _team_profiles(data):
-    teams = data.get('opponent_teams') or []
-    if not teams: return []
-    position_values = {}
-    profiles = []
-    for t in teams:
-        roster = t.get('roster') or []
-        buckets = {}
-        for p in roster:
-            pos = p.get('position') or 'UTIL'
-            buckets.setdefault(pos, []).append(p.get('total_points') or 0)
-            position_values.setdefault(pos, []).append(p.get('total_points') or 0)
-        avg = {k: round(sum(v)/len(v), 1) for k, v in position_values.items() if v}
-        team_avg = sum(avg.values()) / max(1, len(avg))
-        strengths = sorted(((k, v) for k, v in avg.items() if v >= team_avg), key=lambda x:x[1], reverse=True)[:3]
-        weaknesses = sorted(((k, v) for k, v in avg.items() if v < team_avg), key=lambda x:x[1])[:3]
-        profiles.append({
-            'team_id': t.get('id'), 'team': t.get('name'),
-            'record': t.get('record'), 'roster_size': len(roster),
-            'top_players': sorted([{'name':p.get('name'),'position':p.get('position'),'points':p.get('total_points') or 0} for p in roster], key=lambda x:x['points'], reverse=True)[:6],
-            'position_depth': {k: len(v) for k,v in buckets.items()},
-            'strengths': [k for k,_ in strengths], 'relative_weaknesses': [k for k,_ in weaknesses]
-        })
-    return profiles
-
-
-async def _get_json(client, url, params=None, timeout=8):
-    try:
-        r = await client.get(url, params=params, timeout=timeout)
-        if r.status_code < 400:
-            return r.json()
-    except Exception:
-        pass
-    return None
-
-
-async def _enrich(prompt):
-    if not httpx or 'LIVE ESPN DATA:' not in prompt:
-        return prompt
-    names = _names_from_prompt(prompt)
-    # Keep enrichment fast: prioritize players explicitly mentioned, then the most
-    # useful roster/waiver names. The fantasy points/rosters themselves remain live ESPN data.
-    question = prompt.split('\nQUESTION:\n',1)[-1].lower()
-    tokens = set(re.findall(r'[a-z0-9]+', question))
-    ranked = sorted(names, key=lambda n: (len(tokens.intersection(set(re.findall(r'[a-z0-9]+', n.lower())))), n), reverse=True)
-    names = ranked[:24]
-    today = datetime.date.today()
-    start = today - datetime.timedelta(days=7)
-    async with httpx.AsyncClient(headers={'User-Agent':'AI-Fantasy-GM/1.0','Accept':'application/json'}, follow_redirects=True) as client:
-        # ESPN's public Now API provides a current news feed without another paid key.
-        news_task = _get_json(client, 'https://now.core.api.espn.com/v1/sports/news', {'limit':200})
-        # MLB Stats API is public and gives current-season MLB performance data.
-        search_tasks = [_get_json(client, 'https://statsapi.mlb.com/api/v1/people/search', {'names':n}) for n in names]
-        news, people = await asyncio.gather(news_task, asyncio.gather(*search_tasks))
-        news_items = (news or {}).get('articles') or (news or {}).get('feed') or []
-        recent_news = []
-        for item in news_items:
-            title = item.get('headline') or item.get('title') or ''
-            desc = item.get('description') or ''
-            blob = (title + ' ' + desc).lower()
-            matched = [n for n in names if n.lower() in blob]
-            if matched:
-                recent_news.append({'players':matched[:3], 'headline':title, 'description':desc[:400], 'published':item.get('published') or item.get('publishedDate'), 'link':item.get('links',{}).get('web',{}).get('href') if isinstance(item.get('links'),dict) else None})
-        recent_news = recent_news[:60]
-        stats = []
-        for name, result in zip(names, people):
-            plist = (result or {}).get('people') or []
-            if not plist: continue
-            pid = plist[0].get('id')
-            if not pid: continue
-            season_url = f'https://statsapi.mlb.com/api/v1/people/{pid}/stats'
-            split_url = f'https://statsapi.mlb.com/api/v1/people/{pid}/stats'
-            season, recent = await asyncio.gather(
-                _get_json(client, season_url, {'stats':'season','group':'hitting,pitching','season':str(today.year)}),
-                _get_json(client, split_url, {'stats':'byDateRange','group':'hitting,pitching','startDate':start.isoformat(),'endDate':today.isoformat()})
-            )
-            stat_rows=[]
-            for payload,label in ((season,'season'),(recent,'last_7_days')):
-                for split in (payload or {}).get('stats',[]) or []:
-                    for s in split.get('splits',[]) or []:
-                        stat=s.get('stat') or {}
-                        stat_rows.append({'period':label,'group':split.get('group',''),'games':stat.get('gamesPlayed'),'avg':stat.get('avg'),'obp':stat.get('obp'),'slg':stat.get('slg'),'ops':stat.get('ops'),'hr':stat.get('homeRuns'),'rbi':stat.get('rbi'),'runs':stat.get('runs'),'sb':stat.get('stolenBases'),'era':stat.get('era'),'whip':stat.get('whip'),'wins':stat.get('wins'),'losses':stat.get('losses'),'strikeouts':stat.get('strikeOuts'),'saves':stat.get('saves'),'innings':stat.get('inningsPitched')})
-            if stat_rows: stats.append({'name':name,'mlbam_id':pid,'stats':stat_rows})
+def _patch_module(mod):
+    if getattr(mod, '_player_patch_done', False): return
+    mod._player_patch_done=True
+    mod.POS.update(POS_FIX); mod.SLOT.update(SLOT_FIX)
+    orig_cp=mod.compact_player
+    def cp(e):
+        out=orig_cp(e)
+        p=(e.get('playerPoolEntry') or {}).get('player') or e.get('player') or {}
+        pos, elig=_positions(p)
+        out['position']=pos; out['eligible_positions']=elig; out['display_position']=pos if not elig else '/'.join(elig)
+        out['status_label']=out.get('roster_status') or 'ACTIVE'
+        return out
+    mod.compact_player=cp
+    orig_pool=mod.pool
+    async def pool(*args,**kwargs):
+        rows=await orig_pool(*args,**kwargs)
+        for out in rows:
+            out['eligible_positions']=list(dict.fromkeys([x for x in (out.get('eligible_positions') or []) if x not in ('UTIL','BENCH','IL','—')]))
+            if out.get('position') and out['position'] not in out['eligible_positions']:
+                out['eligible_positions'].insert(0,out['position'])
+            out['display_position']='/'.join(out['eligible_positions']) if out['eligible_positions'] else out.get('position','—')
+        return rows
+    mod.pool=pool
+    orig_card=mod.player_card
+    async def card(req,pid,p):
+        out=await orig_card(req,pid,p)
+        out['position']=POS_FIX.get(out.get('position_id'),out.get('position','—'))
         try:
-            data = json.loads(prompt.split('LIVE ESPN DATA:\n',1)[1].split('\nRECENT CHAT:',1)[0])
-            data['live_mlb_enrichment'] = {'retrieved_at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(), 'recent_news':recent_news, 'mlb_stats':stats, 'team_strategy_profiles':_team_profiles(data), 'news_window_days':7}
-            before, rest = prompt.split('LIVE ESPN DATA:\n',1)
-            rest_data, after = rest.split('\nRECENT CHAT:',1)
-            return before + 'LIVE ESPN DATA:\n' + json.dumps(data,separators=(',',':')) + '\nRECENT CHAT:' + after
-        except Exception:
-            return prompt
+            async with httpx.AsyncClient(timeout=8,follow_redirects=True,headers={'User-Agent':'AI-Fantasy-GM/2.0'}) as c:
+                r=await c.get(f'https://statsapi.mlb.com/api/v1/people/{int(pid)}/stats',params={'stats':'season','group':'hitting,pitching','season':str(req.season)})
+                if r.status_code < 400:
+                    rows=[]
+                    for group in r.json().get('stats',[]) or []:
+                        for split in group.get('splits',[]) or []:
+                            rows.append({'group':group.get('group'),'season':split.get('season'),'team':(split.get('team') or {}).get('name'),'stats':split.get('stat') or {}})
+                    out['mlb_season_stats']=rows
+        except Exception: out['mlb_season_stats']=[]
+        out['fantasy_season_stats']={'fantasy_points':out.get('total_points'),'applied_stat_total':out.get('current_period_points'),'percent_owned':out.get('percent_owned'),'percent_started':out.get('percent_started'),'scoring_period':p}
+        return out
+    mod.player_card=card
 
+class PlayerUI(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response=await call_next(request); ctype=response.headers.get('content-type','')
+        if 'text/html' not in ctype: return response
+        body=b''
+        async for chunk in response.body_iterator: body += chunk
+        extra=r'''<style>.player-link{cursor:pointer}.player-link:hover{background:#132b43!important}.statgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.statbox{padding:12px;background:#091625;border:1px solid #29435c;border-radius:10px}.statbox b{display:block;font-size:18px;margin-top:4px}@media(max-width:620px){.statgrid{grid-template-columns:1fr 1fr}}</style><div id="playerModal" class="modal"><div class="modalbox"><button class="close" onclick="closePlayer()">Close</button><div id="playerModalBody" class="loading">Loading player…</div></div></div><script>
+async function openPlayer(id){if(!id)return;const m=document.getElementById('playerModal'),b=document.getElementById('playerModalBody');m.classList.add('on');b.innerHTML='<div class="loading">Loading current season stats…</div>';try{const r=await api('/espn/player/'+id),p=r.player||{},mlb=p.mlb_season_stats||[],f=p.fantasy_season_stats||{};let stats='';for(const g of mlb){for(const [k,v] of Object.entries(g.stats||{})){if(v!==null&&v!==undefined&&v!=='')stats+='<div class="statbox"><span class="muted">'+esc(k)+'</span><b>'+esc(v)+'</b></div>'}}b.innerHTML='<div class="ey">Player</div><h2 style="margin:4px 0">'+esc(p.name)+'</h2><div class="muted">'+esc(p.position||'—')+' · '+(p.active?'Active':'Inactive')+'</div><h3>Fantasy Season</h3><div class="statgrid"><div class="statbox"><span class="muted">Fantasy Points</span><b>'+esc(f.fantasy_points??'—')+'</b></div><div class="statbox"><span class="muted">Owned</span><b>'+esc(f.percent_owned??'—')+'</b></div><div class="statbox"><span class="muted">Started</span><b>'+esc(f.percent_started??'—')+'</b></div><div class="statbox"><span class="muted">Scoring Period</span><b>'+esc(f.scoring_period??'—')+'</b></div></div><h3>MLB Season Stats</h3><div class="statgrid">'+(stats||'<div class="muted">No season stats available.</div>')+'</div>'}catch(e){b.innerHTML='<div class="notice err">Unable to load player stats: '+esc(e.message)+'</div>'}}
+function closePlayer(){document.getElementById('playerModal')?.classList.remove('on')}
+function wirePlayerClicks(){document.querySelectorAll('#roster tr[data-player-id],#waiverRows tr[data-player-id],#opRoster tr[data-player-id]').forEach(r=>{r.classList.add('player-link');r.onclick=()=>openPlayer(r.dataset.playerId)})}
+setTimeout(wirePlayerClicks,700);setInterval(wirePlayerClicks,1200);
+</script>'''
+        text=body.decode('utf-8','replace').replace('</body>',extra+'</body>')
+        headers={k:v for k,v in response.headers.items() if k.lower() not in ('content-length','content-encoding')}
+        return Response(content=text,status_code=response.status_code,headers=headers,media_type='text/html')
 
-def _patch():
-    global _ORIGINAL_POST
-    if not httpx or _ORIGINAL_POST is not None: return
-    _ORIGINAL_POST = httpx.AsyncClient.post
-    async def post(self, url, *args, **kwargs):
-        if 'openrouter.ai/api/v1/chat/completions' in str(url):
-            try:
-                body = kwargs.get('json')
-                if isinstance(body, dict) and body.get('messages'):
-                    for msg in body['messages']:
-                        if msg.get('role') == 'user' and isinstance(msg.get('content'), str) and 'LIVE ESPN DATA:' in msg['content']:
-                            msg['content'] = await _enrich(msg['content'])
-                            break
-                    kwargs['json'] = body
-            except Exception:
-                pass
-        return await _ORIGINAL_POST(self, url, *args, **kwargs)
-    httpx.AsyncClient.post = post
-
-_patch()
+def _init(self,*args,**kwargs):
+    _ORIG_INIT(self,*args,**kwargs); self.add_middleware(PlayerUI)
+    @self.on_event('startup')
+    async def _patch_startup():
+        import sys
+        mod=sys.modules.get('backend.main') or sys.modules.get('main')
+        if mod: _patch_module(mod)
+FastAPI.__init__=_init
