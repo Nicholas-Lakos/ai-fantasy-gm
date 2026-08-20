@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: ai-fantasy-gm
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true
