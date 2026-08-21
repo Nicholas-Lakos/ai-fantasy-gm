@@ -105,9 +105,9 @@ async def player_card(req,pid,p):
  if not stats:
   for s in pe.get('stats',[]) or []:stats.append({'seasonId':s.get('seasonId'),'statTypeId':s.get('statTypeId'),'scoringPeriodId':s.get('scoringPeriodId'),'appliedTotal':s.get('appliedTotal'),'appliedAverage':s.get('appliedAverage'),'appliedStats':s.get('appliedStats') or {}})
  return {'id':pid,'name':pl.get('fullName'),'position':POS.get(pl.get('defaultPositionId'),'—'),'eligible_positions':[POS.get(v,'—') for v in pl.get('eligibleSlots',[]) if v in POS],'pro_team_id':pl.get('proTeamId'),'injury_status':pl.get('injuryStatus'),'active':pl.get('active'),'total_points':pe.get('totalPoints'),'average_points':fantasy_average(pe,req.season),'current_period_points':current or pe.get('appliedStatTotal'),'percent_owned':pe.get('percentOwned'),'percent_started':pe.get('percentStarted'),'stats':stats,'raw_stat_count':len(stats)}
-app=FastAPI(title='AI Fantasy GM',version='11.3');app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_methods=['*'],allow_headers=['*'])
+app=FastAPI(title='AI Fantasy GM',version='11.4');app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_methods=['*'],allow_headers=['*'])
 @app.get('/health')
-def health():return {'ok':True,'version':'11.3','ai_provider':'openrouter-free','ai_configured':bool(os.getenv('OPENROUTER_API_KEY'))}
+def health():return {'ok':True,'version':'11.4','ai_provider':'openrouter-free','ai_configured':bool(os.getenv('OPENROUTER_API_KEY'))}
 @app.post('/auth/signup')
 def signup(a:Auth):
  c=db()
@@ -161,15 +161,19 @@ async def ai_call(system,prompt):
     if text and text.lower() not in ('safe','user safety: safe'):return text,j.get('model',m)
    except Exception as e:last=str(e)
  raise HTTPException(502,'AI service error: '+last)
+def league_rules(settings):
+ s=settings or {}
+ return {'scoring':s.get('scoringSettings') or {},'roster':s.get('rosterSettings') or {},'acquisitions':s.get('acquisitionSettings') or {},'trades':s.get('tradeSettings') or {},'draft':s.get('draftSettings') or {},'playoffs':s.get('playoffSettings') or {},'lineup_slots':s.get('lineupSlotCounts') or s.get('lineupSlotCountsByPosition') or {}}
 @app.post('/ai/gm')
 async def gm(q:Question,authorization:str=Header(None)):
  u=uid(authorization);l,r,d,p,w=await live(u,True);ss,rank=standings(d,l['team_id']);teams=[compact_team(x,l['season']) for x in d.get('teams',[])];my=next((x for x in teams if x['id']==l['team_id']),None);owners=[{'player':p['name'],'team':t['name'],'team_id':t['id'],'position':p['position'],'points':p['total_points']} for t in teams for p in t['roster']];qwords=set(re.findall(r'[a-z0-9]+',q.question.lower()));ranked=sorted(w,key=lambda x:(x.get('total_points') or 0),reverse=True);relevant=[]
  for x in w:
   if qwords.intersection(set(re.findall(r'[a-z0-9]+',x['name'].lower()))):relevant.append(x)
- data={'league':(d.get('settings') or {}).get('name'),'scoring_period':p,'standings':ss,'my_team':my,'opponent_teams':teams,'player_ownership_index':owners,'live_waivers':list({x['id']:x for x in relevant+ranked[:150]}.values()),'waiver_pool_count':len(w),'scoring_settings':(d.get('settings') or {}).get('scoringSettings'),'roster_settings':(d.get('settings') or {}).get('rosterSettings')}
- system='You are an elite fantasy baseball GM. The LIVE ESPN JSON supplied here was fetched immediately before this question. Treat it as authoritative. Never invent players or stats. Determine player ownership from player_ownership_index and waiver availability from live_waivers. Use league scoring and roster settings. Give the recommendation first, then concise evidence. For waivers name the best add and drop. For trades use ACCEPT, DECLINE, or COUNTER and name the manager. Never output safety labels or policy text.'
+ settings=d.get('settings') or {};rules=league_rules(settings)
+ data={'league':settings.get('name') or l['league_name'],'season':l['season'],'scoring_period':p,'standings':ss,'my_team':my,'opponent_teams':teams,'player_ownership_index':owners,'live_waivers':list({x['id']:x for x in relevant+ranked[:150]}.values()),'waiver_pool_count':len(w),'league_rules':rules}
+ system='You are an elite fantasy baseball GM with deep knowledge of MLB and fantasy baseball analytics. The LIVE ESPN JSON supplied here was fetched immediately before this question and is authoritative for this league. Never invent players, stats, positions, rules, or transactions. The league_rules object contains the actual league scoring, roster, acquisition, trade, draft, playoff, and lineup-slot settings; interpret those rules before making recommendations. Use the exact scoring categories and roster constraints when valuing players. Use baseball analytics intelligently: distinguish descriptive results from predictive skill, consider wOBA/xwOBA, wRC+, ISO, K%, BB%, BABIP, hard-hit rate, barrel rate, exit velocity, launch angle, sprint speed, FIP/xFIP/SIERA, K-BB%, swinging-strike rate, CSW%, HR/FB, GB/FB, and Statcast quality of contact when relevant. Do not treat any one metric as definitive. For fantasy decisions, prioritize the categories and scoring system of this league over generic rankings. Determine player ownership from player_ownership_index and waiver availability from live_waivers. Give the recommendation first, then concise evidence. For waivers name the best add and drop. For trades use ACCEPT, DECLINE, or COUNTER and name the manager. Never output safety labels or policy text.'
  c=db();hist=c.execute('SELECT role,content FROM ai_messages WHERE user_id=? ORDER BY id DESC LIMIT 6',(u,)).fetchall();prompt='LIVE ESPN DATA:\n'+json.dumps(data,separators=(',',':'))+'\nRECENT CHAT:\n'+json.dumps([dict(x) for x in reversed(hist)],separators=(',',':'))+'\nQUESTION:\n'+q.question
- ans,model=await ai_call(system,prompt);now=datetime.utcnow().isoformat();c.execute('INSERT INTO ai_messages(user_id,role,content,created_at) VALUES(?,?,?,?)',(u,'user',q.question,now));c.execute('INSERT INTO ai_messages(user_id,role,content,created_at) VALUES(?,?,?,?)',(u,'assistant',ans,now));c.commit();return {'answer':ans,'context':{'scoring_period':p,'my_roster_players':len(my['roster']) if my else 0,'all_opponent_teams':len(teams)-1,'live_waiver_pool_count':len(w),'model':model,'live_data':True}}
+ ans,model=await ai_call(system,prompt);now=datetime.utcnow().isoformat();c.execute('INSERT INTO ai_messages(user_id,role,content,created_at) VALUES(?,?,?,?)',(u,'user',q.question,now));c.execute('INSERT INTO ai_messages(user_id,role,content,created_at) VALUES(?,?,?,?)',(u,'assistant',ans,now));c.commit();return {'answer':ans,'context':{'scoring_period':p,'my_roster_players':len(my['roster']) if my else 0,'all_opponent_teams':len(teams)-1,'live_waiver_pool_count':len(w),'model':model,'live_data':True,'league_rules_loaded':True}}
 @app.get('/')
 def home():return FileResponse(os.path.join(ROOT,'frontend','index.html'))
 @app.on_event('startup')
