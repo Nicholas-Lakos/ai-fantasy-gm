@@ -1,4 +1,6 @@
+import os
 import uvicorn
+from fastapi.responses import FileResponse
 from . import main
 
 POS = main.POS
@@ -135,6 +137,10 @@ async def player_card_fixed(req, pid, p):
 main.compact_player = compact_player_fixed
 main.pool = pool_fixed
 main.player_card = player_card_fixed
+
+@main.app.get('/fixes.js')
+def fixes_js():
+    return FileResponse(os.path.join(main.ROOT, 'frontend', 'fixes.js'), media_type='application/javascript')
 
 if __name__ == '__main__':
     uvicorn.run(main.app, host='0.0.0.0', port=8000)
