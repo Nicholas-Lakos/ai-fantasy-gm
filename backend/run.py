@@ -2,12 +2,32 @@ import os, asyncio
 import uvicorn
 import httpx
 from fastapi import Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from . import main
 
 POS=main.POS
 SLOT=main.SLOT
 _ORIGINAL_LIVE=main.live
+
+# The production page previously contained an older inline openPlayer() function
+# and never loaded frontend/fixes.js. That made the browser keep rendering the
+# old empty ESPN profile even though the MLB endpoint existed. Inject the
+# current fixes bundle at the server boundary so every Render response uses it.
+FRONTEND_VERSION='20260821-mlb-profile-1'
+
+@main.app.middleware('http')
+async def inject_current_frontend(request, call_next):
+    if request.url.path == '/':
+        path=os.path.join(main.ROOT,'frontend','index.html')
+        try:
+            html=open(path,'r',encoding='utf-8').read()
+            tag=f'<script src="/fixes.js?v={FRONTEND_VERSION}"></script>'
+            if '/fixes.js?' not in html:
+                html=html.replace('</body>',tag+'</body>')
+            return HTMLResponse(html,headers={'Cache-Control':'no-store'})
+        except Exception:
+            pass
+    return await call_next(request)
 
 def player_obj(entry):
     ppe=entry.get('playerPoolEntry') or {}
@@ -31,7 +51,7 @@ async def hydrate_rosters(req,d,period):
     for start in range(0,len(ids),200):
         batch=ids[start:start+200]
         try:
-            info=await main.espn(req,['kona_player_info'],period,{'players':{'filterIds':{'value':batch},'limit':len(batch)}},timeout=35)
+            info=await main.espn(req,['kona_player_info'],period,{'players':{'filterIds':{'value':batch},'limit':len(batch),'sortPercOwned':{'sortPriority':1,'sortAsc':False}}},timeout=35)
             for x in info.get('players',[]) or []:
                 pid=x.get('id') or (x.get('playerPoolEntry') or {}).get('id') or (x.get('player') or {}).get('id')
                 if pid is not None:hydrated[int(pid)]=x
@@ -70,7 +90,7 @@ async def pool_fixed(req,p,limit=500):
 async def player_card_fixed(req,pid,p):
     filters={'players':{'filterIds':{'value':[int(pid)]},'filterStatsForTopScoringPeriodIds':{'value':max(int(p),1),'additionalValue':[f'00{req.season}',f'10{req.season}']}}}
     try:data=await main.espn(req,['kona_playercard'],p,filters,timeout=30)
-    except Exception:data=await main.espn(req,['kona_player_info'],p,{'players':{'filterIds':{'value':[int(pid)]},'limit':1}},timeout=30)
+    except Exception:data=await main.espn(req,['kona_player_info'],p,{'players':{'filterIds':{'value':[int(pid)]},'limit':1,'sortPercOwned':{'sortPriority':1,'sortAsc':False}}},timeout=30)
     items=data.get('players') or []
     if not items:raise main.HTTPException(404,'Player not found in ESPN.')
     x=items[0];po=player_obj(x);ppe=x.get('playerPoolEntry') or {};raw=po.get('stats') or x.get('stats') or ppe.get('stats') or []
@@ -85,22 +105,37 @@ async def player_card_fixed(req,pid,p):
             except Exception:pass
     return {'id':pid,'name':po.get('fullName') or f'Player {pid}','position':POS.get(po.get('defaultPositionId'),'—'),'eligible_positions':[POS[x] for x in (po.get('eligibleSlots') or []) if x in POS],'pro_team_id':po.get('proTeamId'),'injury_status':po.get('injuryStatus'),'active':po.get('active'),'total_points':ppe.get('totalPoints',x.get('totalPoints')),'current_period_points':current,'percent_owned':ppe.get('percentOwned',x.get('percentOwned')),'percent_started':ppe.get('percentStarted',x.get('percentStarted')),'stats':display,'season_splits':season,'raw_stat_count':len(raw)}
 
-@main.app.get('/mlb/player-stats')
-async def mlb_player_stats(name:str=Query(...,min_length=1)):
+async def mlb_payload(name):
     async with httpx.AsyncClient(timeout=20,follow_redirects=True) as c:
-        search=await c.get('https://statsapi.mlb.com/api/v1/people/search',params={'names':name,'active':'false'});search.raise_for_status();people=search.json().get('people') or []
+        search=await c.get('https://statsapi.mlb.com/api/v1/people/search',params={'names':name,'active':'false','sportIds':'1'})
+        search.raise_for_status()
+        people=search.json().get('people') or []
         exact=next((x for x in people if str(x.get('fullName','')).casefold()==name.casefold()),None) or (people[0] if people else None)
         if not exact:return {'found':False,'name':name}
-        pid=exact['id'];h,p=await asyncio.gather(c.get(f'https://statsapi.mlb.com/api/v1/people/{pid}/stats',params={'stats':'season','group':'hitting','season':2026}),c.get(f'https://statsapi.mlb.com/api/v1/people/{pid}/stats',params={'stats':'season','group':'pitching','season':2026}))
-        def first(resp):
-            try:
-                resp.raise_for_status();blocks=resp.json().get('stats') or []
-                for block in blocks:
-                    splits=block.get('splits') or []
-                    if splits:return splits[0].get('stat')
-            except Exception:return None
+        pid=exact['id']
+        async def stats(group):
+            r=await c.get(f'https://statsapi.mlb.com/api/v1/people/{pid}/stats',params={'stats':'season','group':group,'season':2026,'gameType':'R'})
+            r.raise_for_status()
+            blocks=r.json().get('stats') or []
+            for block in blocks:
+                splits=block.get('splits') or []
+                if splits:
+                    # Prefer the league-wide/total split if one is supplied.
+                    split=next((s for s in splits if s.get('isHome') is None and s.get('team') is None),splits[0])
+                    return split.get('stat') or {}
             return None
-        return {'found':True,'mlb_id':pid,'name':exact.get('fullName'),'hitting':first(h),'pitching':first(p)}
+        h,p=await asyncio.gather(stats('hitting'),stats('pitching'))
+        return {'found':True,'mlb_id':pid,'name':exact.get('fullName'),'position':(exact.get('primaryPosition') or {}).get('abbreviation'),'hitting':h,'pitching':p}
+
+@main.app.get('/mlb/player-stats')
+async def mlb_player_stats(name:str=Query(...,min_length=1)):
+    try:return await mlb_payload(name)
+    except Exception as e:return {'found':False,'name':name,'error':str(e)}
+
+@main.app.get('/api/mlb/player-stats')
+async def mlb_player_stats_api(name:str=Query(...,min_length=1)):
+    try:return await mlb_payload(name)
+    except Exception as e:return {'found':False,'name':name,'error':str(e)}
 
 main.compact_player=compact_player_fixed
 main.compact_team=compact_team_fixed
@@ -109,6 +144,6 @@ main.player_card=player_card_fixed
 main.live=live_fixed
 
 @main.app.get('/fixes.js')
-def fixes_js():return FileResponse(os.path.join(main.ROOT,'frontend','fixes.js'),media_type='application/javascript')
+def fixes_js():return FileResponse(os.path.join(main.ROOT,'frontend','fixes.js'),media_type='application/javascript',headers={'Cache-Control':'no-store'})
 
 if __name__=='__main__':uvicorn.run(main.app,host='0.0.0.0',port=8000)
