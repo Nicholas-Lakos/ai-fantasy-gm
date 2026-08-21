@@ -44,10 +44,22 @@ def period(d):
  v=d.get('scoringPeriodId');return int(v) if isinstance(v,(int,str)) and str(v).isdigit() else None
 def team_name(t):return t.get('name') or t.get('location') or t.get('nickname') or f"Team {t.get('id')}"
 def rec(t):return ((t.get('record') or {}).get('overall') or {})
-def compact_player(e):
- ppe=e.get('playerPoolEntry') or {};p=ppe.get('player') or {};pid=p.get('id') or e.get('playerId');slot=e.get('lineupSlotId');inj=p.get('injuryStatus') or e.get('injuryStatus') or ''
- return {'id':pid,'name':p.get('fullName') or f'Player {pid}','position':POS.get(p.get('defaultPositionId'),'—'),'eligible_positions':[POS[x] for x in p.get('eligibleSlots',[]) if x in POS],'pro_team_id':p.get('proTeamId'),'injury_status':inj,'lineup_slot':SLOT.get(slot,'—'),'roster_status':inj or ('BENCH' if slot==12 else 'ACTIVE'),'total_points':ppe.get('totalPoints'),'applied_stat_total':ppe.get('appliedStatTotal'),'percent_owned':ppe.get('percentOwned'),'percent_started':ppe.get('percentStarted')}
-def compact_team(t):return {'id':t.get('id'),'name':team_name(t),'location':t.get('location'),'nickname':t.get('nickname'),'record':rec(t),'points':t.get('points',0),'logo':t.get('logo'),'roster':[compact_player(e) for e in (t.get('roster') or {}).get('entries',[])]}
+def fantasy_average(pe,season):
+ vals=[]
+ for s in pe.get('stats',[]) or []:
+  if s.get('seasonId')==season and s.get('statTypeId')==0 and s.get('appliedAverage') is not None:
+   try: vals.append(float(s.get('appliedAverage')))
+   except: pass
+ if vals:return vals[0]
+ actual=[s for s in pe.get('stats',[]) or [] if s.get('seasonId')==season and s.get('statTypeId')==0 and s.get('appliedTotal') is not None and s.get('scoringPeriodId') is not None]
+ if actual:
+  try:return float(pe.get('totalPoints') or 0)/len(actual)
+  except:return None
+ return None
+def compact_player(e,season=None):
+ ppe=e.get('playerPoolEntry') or {};p=ppe.get('player') or {};pid=p.get('id') or e.get('playerId');slot=e.get('lineupSlotId');inj=p.get('injuryStatus') or e.get('injuryStatus') or '';avg=fantasy_average(ppe,season) if season else None
+ return {'id':pid,'name':p.get('fullName') or f'Player {pid}','position':POS.get(p.get('defaultPositionId'),'—'),'eligible_positions':[POS[x] for x in p.get('eligibleSlots',[]) if x in POS],'pro_team_id':p.get('proTeamId'),'injury_status':inj,'lineup_slot':SLOT.get(slot,'—'),'roster_status':inj or ('BENCH' if slot==12 else 'ACTIVE'),'total_points':ppe.get('totalPoints'),'average_points':avg,'applied_stat_total':ppe.get('appliedStatTotal'),'percent_owned':ppe.get('percentOwned'),'percent_started':ppe.get('percentStarted')}
+def compact_team(t,season=None):return {'id':t.get('id'),'name':team_name(t),'location':t.get('location'),'nickname':t.get('nickname'),'record':rec(t),'points':t.get('points',0),'logo':t.get('logo'),'roster':[compact_player(e,season) for e in (t.get('roster') or {}).get('entries',[])]}
 def standings(d,tid):
  a=[]
  for t in d.get('teams',[]):
@@ -69,7 +81,7 @@ async def pool(req,p,limit=500):
  for x in items:
   pl=x.get('player') or {};pe=x.get('playerPoolEntry') or {};pid=x.get('id') or pl.get('id')
   if not pid:continue
-  status=pe.get('status') or x.get('status') or 'FREEAGENT';out[pid]={'id':pid,'name':pl.get('fullName') or f'Player {pid}','position':POS.get(pl.get('defaultPositionId'),'—'),'eligible_positions':[POS.get(v,'—') for v in pl.get('eligibleSlots',[]) if v in POS],'injury_status':pl.get('injuryStatus'),'total_points':pe.get('totalPoints'),'percent_owned':pe.get('percentOwned'),'percent_started':pe.get('percentStarted'),'rank':pe.get('rank'),'status':status,'pro_team_id':pl.get('proTeamId')}
+  status=pe.get('status') or x.get('status') or 'FREEAGENT';out[pid]={'id':pid,'name':pl.get('fullName') or f'Player {pid}','position':POS.get(pl.get('defaultPositionId'),'—'),'eligible_positions':[POS.get(v,'—') for v in pl.get('eligibleSlots',[]) if v in POS],'injury_status':pl.get('injuryStatus'),'total_points':pe.get('totalPoints'),'average_points':fantasy_average(pe,req.season),'percent_owned':pe.get('percentOwned'),'percent_started':pe.get('percentStarted'),'rank':pe.get('rank'),'status':status,'pro_team_id':pl.get('proTeamId')}
  return list(out.values())
 async def live(u,waivers=False):
  l=league_row(u);req=req_for(l);meta=await espn(req,['mSettings','mTeam','mStandings','mStatus']);p=period(meta)
@@ -79,8 +91,6 @@ async def live(u,waivers=False):
  else:d=await rt;w=[]
  d['settings']=meta.get('settings') or d.get('settings') or {};d['scoringPeriodId']=p;return l,req,d,p,w
 async def player_card(req,pid,p):
- # kona_playercard is ESPN's deep per-player view and needs filterStatsForTopScoringPeriodIds
- # with season/type codes. kona_player_info often omits the detailed stats array.
  filters={'players':{'filterIds':{'value':[int(pid)]},'filterStatsForTopScoringPeriodIds':{'value':max(int(p),1),'additionalValue':[f'00{req.season}',f'10{req.season}']}}}
  try:d=await espn(req,['kona_playercard'],p,filters,timeout=25)
  except HTTPException:raise
@@ -90,16 +100,14 @@ async def player_card(req,pid,p):
  x=items[0];pl=x.get('player') or {};pe=x.get('playerPoolEntry') or {};stats=[];current=0
  for s in pe.get('stats',[]) or []:
   if s.get('seasonId')==req.season and s.get('statTypeId')==0:
-   stats.append({'scoringPeriodId':s.get('scoringPeriodId'),'appliedTotal':s.get('appliedTotal'),'appliedStats':s.get('appliedStats') or {}})
+   stats.append({'scoringPeriodId':s.get('scoringPeriodId'),'appliedTotal':s.get('appliedTotal'),'appliedAverage':s.get('appliedAverage'),'appliedStats':s.get('appliedStats') or {}})
    current=max(current,float(s.get('appliedTotal') or 0))
- # Also expose every stat split so the frontend has something to render even when ESPN returns multiple season entries.
  if not stats:
-  for s in pe.get('stats',[]) or []:
-   stats.append({'seasonId':s.get('seasonId'),'statTypeId':s.get('statTypeId'),'scoringPeriodId':s.get('scoringPeriodId'),'appliedTotal':s.get('appliedTotal'),'appliedStats':s.get('appliedStats') or {}})
- return {'id':pid,'name':pl.get('fullName'),'position':POS.get(pl.get('defaultPositionId'),'—'),'eligible_positions':[POS.get(v,'—') for v in pl.get('eligibleSlots',[]) if v in POS],'pro_team_id':pl.get('proTeamId'),'injury_status':pl.get('injuryStatus'),'active':pl.get('active'),'total_points':pe.get('totalPoints'),'current_period_points':current or pe.get('appliedStatTotal'),'percent_owned':pe.get('percentOwned'),'percent_started':pe.get('percentStarted'),'stats':stats,'raw_stat_count':len(stats)}
-app=FastAPI(title='AI Fantasy GM',version='11.2');app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_methods=['*'],allow_headers=['*'])
+  for s in pe.get('stats',[]) or []:stats.append({'seasonId':s.get('seasonId'),'statTypeId':s.get('statTypeId'),'scoringPeriodId':s.get('scoringPeriodId'),'appliedTotal':s.get('appliedTotal'),'appliedAverage':s.get('appliedAverage'),'appliedStats':s.get('appliedStats') or {}})
+ return {'id':pid,'name':pl.get('fullName'),'position':POS.get(pl.get('defaultPositionId'),'—'),'eligible_positions':[POS.get(v,'—') for v in pl.get('eligibleSlots',[]) if v in POS],'pro_team_id':pl.get('proTeamId'),'injury_status':pl.get('injuryStatus'),'active':pl.get('active'),'total_points':pe.get('totalPoints'),'average_points':fantasy_average(pe,req.season),'current_period_points':current or pe.get('appliedStatTotal'),'percent_owned':pe.get('percentOwned'),'percent_started':pe.get('percentStarted'),'stats':stats,'raw_stat_count':len(stats)}
+app=FastAPI(title='AI Fantasy GM',version='11.3');app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_methods=['*'],allow_headers=['*'])
 @app.get('/health')
-def health():return {'ok':True,'version':'11.2','ai_provider':'openrouter-free','ai_configured':bool(os.getenv('OPENROUTER_API_KEY'))}
+def health():return {'ok':True,'version':'11.3','ai_provider':'openrouter-free','ai_configured':bool(os.getenv('OPENROUTER_API_KEY'))}
 @app.post('/auth/signup')
 def signup(a:Auth):
  c=db()
@@ -120,15 +128,15 @@ async def connect(r:ESPNConnect,authorization:str=Header(None)):
 @app.get('/dashboard')
 async def dashboard(authorization:str=Header(None)):
  u=uid(authorization);l,r,d,p,_=await live(u);ss,rank=standings(d,l['team_id']);t=next((x for x in d.get('teams',[]) if x.get('id')==l['team_id']),{})
- return {'league':(d.get('settings') or {}).get('name') or l['league_name'],'rank':rank,'record':rec(t),'team':compact_team(t),'teams':[compact_team(x) for x in d.get('teams',[])],'standings':ss,'scoring_period':p,'live_data':True}
+ return {'league':(d.get('settings') or {}).get('name') or l['league_name'],'rank':rank,'record':rec(t),'team':compact_team(t,l['season']),'teams':[compact_team(x,l['season']) for x in d.get('teams',[])],'standings':ss,'scoring_period':p,'live_data':True}
 @app.get('/league/teams')
 async def teams(authorization:str=Header(None)):
- u=uid(authorization);l,r,d,p,_=await live(u);ss,_=standings(d,l['team_id']);return {'league':(d.get('settings') or {}).get('name') or l['league_name'],'my_team_id':l['team_id'],'scoring_period':p,'standings':ss,'teams':[compact_team(x) for x in d.get('teams',[])]}
+ u=uid(authorization);l,r,d,p,_=await live(u);ss,_=standings(d,l['team_id']);return {'league':(d.get('settings') or {}).get('name') or l['league_name'],'my_team_id':l['team_id'],'scoring_period':p,'standings':ss,'teams':[compact_team(x,l['season']) for x in d.get('teams',[])]}
 @app.get('/league/teams/{team_id}')
 async def team(team_id:int,authorization:str=Header(None)):
  u=uid(authorization);l,r,d,p,_=await live(u);t=next((x for x in d.get('teams',[]) if x.get('id')==team_id),None)
  if not t:raise HTTPException(404,'That team was not found')
- ss,rank=standings(d,team_id);return {'team':compact_team(t),'rank':rank,'standings':ss,'scoring_period':p}
+ ss,rank=standings(d,team_id);return {'team':compact_team(t,l['season']),'rank':rank,'standings':ss,'scoring_period':p}
 @app.get('/espn/my-team')
 async def myteam(authorization:str=Header(None)):return await dashboard(authorization)
 @app.get('/espn/waivers')
@@ -155,7 +163,7 @@ async def ai_call(system,prompt):
  raise HTTPException(502,'AI service error: '+last)
 @app.post('/ai/gm')
 async def gm(q:Question,authorization:str=Header(None)):
- u=uid(authorization);l,r,d,p,w=await live(u,True);ss,rank=standings(d,l['team_id']);teams=[compact_team(x) for x in d.get('teams',[])];my=next((x for x in teams if x['id']==l['team_id']),None);owners=[{'player':p['name'],'team':t['name'],'team_id':t['id'],'position':p['position'],'points':p['total_points']} for t in teams for p in t['roster']];qwords=set(re.findall(r'[a-z0-9]+',q.question.lower()));ranked=sorted(w,key=lambda x:(x.get('total_points') or 0),reverse=True);relevant=[]
+ u=uid(authorization);l,r,d,p,w=await live(u,True);ss,rank=standings(d,l['team_id']);teams=[compact_team(x,l['season']) for x in d.get('teams',[])];my=next((x for x in teams if x['id']==l['team_id']),None);owners=[{'player':p['name'],'team':t['name'],'team_id':t['id'],'position':p['position'],'points':p['total_points']} for t in teams for p in t['roster']];qwords=set(re.findall(r'[a-z0-9]+',q.question.lower()));ranked=sorted(w,key=lambda x:(x.get('total_points') or 0),reverse=True);relevant=[]
  for x in w:
   if qwords.intersection(set(re.findall(r'[a-z0-9]+',x['name'].lower()))):relevant.append(x)
  data={'league':(d.get('settings') or {}).get('name'),'scoring_period':p,'standings':ss,'my_team':my,'opponent_teams':teams,'player_ownership_index':owners,'live_waivers':list({x['id']:x for x in relevant+ranked[:150]}.values()),'waiver_pool_count':len(w),'scoring_settings':(d.get('settings') or {}).get('scoringSettings'),'roster_settings':(d.get('settings') or {}).get('rosterSettings')}
