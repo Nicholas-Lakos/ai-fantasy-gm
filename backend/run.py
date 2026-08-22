@@ -9,11 +9,10 @@ POS=main.POS
 SLOT=main.SLOT
 _ORIGINAL_LIVE=main.live
 
-# The production page previously contained an older inline openPlayer() function
-# and never loaded frontend/fixes.js. That made the browser keep rendering the
-# old empty ESPN profile even though the MLB endpoint existed. Inject the
-# current fixes bundle at the server boundary so every Render response uses it.
-FRONTEND_VERSION='20260821-mlb-profile-1'
+# Always inject a fresh fixes bundle. The service worker used to cache the app shell,
+# which meant new frontend fixes could be deployed successfully but never reached
+# the browser. The current version is deliberately changed whenever this boundary changes.
+FRONTEND_VERSION='20260822-livefix-1'
 
 @main.app.middleware('http')
 async def inject_current_frontend(request, call_next):
@@ -21,10 +20,12 @@ async def inject_current_frontend(request, call_next):
         path=os.path.join(main.ROOT,'frontend','index.html')
         try:
             html=open(path,'r',encoding='utf-8').read()
+            # Remove every previous fixes.js tag, then append exactly one current tag.
+            import re
+            html=re.sub(r'<script\s+src=["\']/fixes\.js(?:\?[^"\']*)?["\']\s*></script>', '', html, flags=re.I)
             tag=f'<script src="/fixes.js?v={FRONTEND_VERSION}"></script>'
-            if '/fixes.js?' not in html:
-                html=html.replace('</body>',tag+'</body>')
-            return HTMLResponse(html,headers={'Cache-Control':'no-store'})
+            html=html.replace('</body>',tag+'</body>')
+            return HTMLResponse(html,headers={'Cache-Control':'no-store, no-cache, must-revalidate','Pragma':'no-cache','Expires':'0'})
         except Exception:
             pass
     return await call_next(request)
@@ -108,24 +109,18 @@ async def player_card_fixed(req,pid,p):
 async def mlb_payload(name):
     async with httpx.AsyncClient(timeout=20,follow_redirects=True) as c:
         search=await c.get('https://statsapi.mlb.com/api/v1/people/search',params={'names':name,'active':'false','sportIds':'1'})
-        search.raise_for_status()
-        people=search.json().get('people') or []
+        search.raise_for_status();people=search.json().get('people') or []
         exact=next((x for x in people if str(x.get('fullName','')).casefold()==name.casefold()),None) or (people[0] if people else None)
         if not exact:return {'found':False,'name':name}
         pid=exact['id']
         async def stats(group):
-            r=await c.get(f'https://statsapi.mlb.com/api/v1/people/{pid}/stats',params={'stats':'season','group':group,'season':2026,'gameType':'R'})
-            r.raise_for_status()
-            blocks=r.json().get('stats') or []
+            r=await c.get(f'https://statsapi.mlb.com/api/v1/people/{pid}/stats',params={'stats':'season','group':group,'season':2026,'gameType':'R'});r.raise_for_status();blocks=r.json().get('stats') or []
             for block in blocks:
                 splits=block.get('splits') or []
                 if splits:
-                    # Prefer the league-wide/total split if one is supplied.
-                    split=next((s for s in splits if s.get('isHome') is None and s.get('team') is None),splits[0])
-                    return split.get('stat') or {}
+                    split=next((s for s in splits if s.get('isHome') is None and s.get('team') is None),splits[0]);return split.get('stat') or {}
             return None
-        h,p=await asyncio.gather(stats('hitting'),stats('pitching'))
-        return {'found':True,'mlb_id':pid,'name':exact.get('fullName'),'position':(exact.get('primaryPosition') or {}).get('abbreviation'),'hitting':h,'pitching':p}
+        h,p=await asyncio.gather(stats('hitting'),stats('pitching'));return {'found':True,'mlb_id':pid,'name':exact.get('fullName'),'position':(exact.get('primaryPosition') or {}).get('abbreviation'),'hitting':h,'pitching':p}
 
 @main.app.get('/mlb/player-stats')
 async def mlb_player_stats(name:str=Query(...,min_length=1)):
@@ -144,6 +139,6 @@ main.player_card=player_card_fixed
 main.live=live_fixed
 
 @main.app.get('/fixes.js')
-def fixes_js():return FileResponse(os.path.join(main.ROOT,'frontend','fixes.js'),media_type='application/javascript',headers={'Cache-Control':'no-store'})
+async def fixes_js():return FileResponse(os.path.join(main.ROOT,'frontend','fixes.js'),media_type='application/javascript',headers={'Cache-Control':'no-store, no-cache, must-revalidate','Pragma':'no-cache','Expires':'0'})
 
 if __name__=='__main__':uvicorn.run(main.app,host='0.0.0.0',port=8000)
