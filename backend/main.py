@@ -75,7 +75,7 @@ async def pool(req,p,limit=500):
  except Exception:items=[]
  if not items:
   try:
-   d=await espn(req,['kona_player_info'],p,{'players':{'limit':limit,'sortPercOwned':{'sortPriority':1,'sortAsc':False}}},timeout=35);items=[x for x in (d.get('players') or []) if ((x.get('playerPoolEntry') or {}).get('status') in ('FREEAGENT','WAIVERS') or x.get('status') in ('FREEAGENT','WAIVERS'))]
+   d=await espn(req,['kona_player_info'],p,{'players':{'limit':limit,'sortPercOwned':{'sortPriority':1,'sortAsc':False}},},timeout=35);items=[x for x in (d.get('players') or []) if ((x.get('playerPoolEntry') or {}).get('status') in ('FREEAGENT','WAIVERS') or x.get('status') in ('FREEAGENT','WAIVERS'))]
   except Exception:items=[]
  out={}
  for x in items:
@@ -86,10 +86,28 @@ async def pool(req,p,limit=500):
 async def live(u,waivers=False):
  l=league_row(u);req=req_for(l);meta=await espn(req,['mSettings','mTeam','mStandings','mStatus']);p=period(meta)
  if p is None:raise HTTPException(502,'ESPN did not provide the current scoring period.')
- rt=espn(req,['mTeam','mRoster','mStandings','mStatus'],p)
- if waivers:d,w=await asyncio.gather(rt,pool(req,p))
- else:d=await rt;w=[]
- d['settings']=meta.get('settings') or d.get('settings') or {};d['scoringPeriodId']=p;return l,req,d,p,w
+ # Fetch the league roster data and team/standings data independently. Some ESPN
+ # responses omit teams when mRoster and mTeam are requested together, which made
+ # the app show waivers correctly while My Team and the league teams appeared empty.
+ base=await espn(req,['mTeam','mStandings','mStatus','mSettings'],None,timeout=30)
+ roster=await espn(req,['mRoster','mTeam','mStandings','mStatus'],p,timeout=30)
+ teams_by_id={int(t.get('id')):t for t in (base.get('teams') or []) if t.get('id') is not None}
+ for t in (roster.get('teams') or []):
+  tid=t.get('id')
+  if tid is None:continue
+  tid=int(tid);merged=teams_by_id.get(tid,{})
+  for k,v in t.items():
+   if k=='roster' and v:merged['roster']=v
+   elif k not in merged or v not in (None,{},[]):merged[k]=v
+  teams_by_id[tid]=merged
+ # If one endpoint only exposes a single team, supplement it with the stored
+ # league team IDs from standings so every team remains navigable.
+ if not teams_by_id:
+  raise HTTPException(502,'ESPN returned no league teams. Please reconnect the league.')
+ d=roster if roster.get('teams') else base;d['teams']=list(teams_by_id.values());d['settings']=meta.get('settings') or base.get('settings') or d.get('settings') or {};d['scoringPeriodId']=p
+ if waivers:d,w=await asyncio.gather(asyncio.sleep(0,result=d),pool(req,p))
+ else:w=[]
+ return l,req,d,p,w
 async def player_card(req,pid,p):
  filters={'players':{'filterIds':{'value':[int(pid)]},'filterStatsForTopScoringPeriodIds':{'value':max(int(p),1),'additionalValue':[f'00{req.season}',f'10{req.season}']}}}
  try:d=await espn(req,['kona_playercard'],p,filters,timeout=25)
@@ -105,9 +123,9 @@ async def player_card(req,pid,p):
  if not stats:
   for s in pe.get('stats',[]) or []:stats.append({'seasonId':s.get('seasonId'),'statTypeId':s.get('statTypeId'),'scoringPeriodId':s.get('scoringPeriodId'),'appliedTotal':s.get('appliedTotal'),'appliedAverage':s.get('appliedAverage'),'appliedStats':s.get('appliedStats') or {}})
  return {'id':pid,'name':pl.get('fullName'),'position':POS.get(pl.get('defaultPositionId'),'—'),'eligible_positions':[POS.get(v,'—') for v in pl.get('eligibleSlots',[]) if v in POS],'pro_team_id':pl.get('proTeamId'),'injury_status':pl.get('injuryStatus'),'active':pl.get('active'),'total_points':pe.get('totalPoints'),'average_points':fantasy_average(pe,req.season),'current_period_points':current or pe.get('appliedStatTotal'),'percent_owned':pe.get('percentOwned'),'percent_started':pe.get('percentStarted'),'stats':stats,'raw_stat_count':len(stats)}
-app=FastAPI(title='AI Fantasy GM',version='11.5');app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_methods=['*'],allow_headers=['*'])
+app=FastAPI(title='AI Fantasy GM',version='11.6');app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_methods=['*'],allow_headers=['*'])
 @app.get('/health')
-def health():return {'ok':True,'version':'11.5','ai_provider':'openrouter-free','ai_configured':bool(os.getenv('OPENROUTER_API_KEY'))}
+def health():return {'ok':True,'version':'11.6','ai_provider':'openrouter-free','ai_configured':bool(os.getenv('OPENROUTER_API_KEY'))}
 @app.post('/auth/signup')
 def signup(a:Auth):
  c=db()
@@ -148,34 +166,3 @@ async def player(player_id:int,authorization:str=Header(None)):
 @app.post('/ai/clear')
 def clear(authorization:str=Header(None)):
  c=db();c.execute('DELETE FROM ai_messages WHERE user_id=?',(uid(authorization),));c.commit();return {'cleared':True}
-async def ai_call(system,prompt):
- key=os.getenv('OPENROUTER_API_KEY')
- if not key:raise HTTPException(503,'Free AI is not configured. Add OPENROUTER_API_KEY to Render.')
- models=[OR_MODEL,'openai/gpt-oss-120b:free','openai/gpt-oss-20b:free','nvidia/nemotron-3-nano-30b-a3b:free'];last='Free AI unavailable.'
- async with httpx.AsyncClient(timeout=45) as c:
-  for m in dict.fromkeys(models):
-   try:
-    body={'model':m,'messages':[{'role':'system','content':system},{'role':'user','content':prompt}],'max_tokens':1400,'temperature':0.12};r=await c.post(OR_BASE,headers={'Authorization':f'Bearer {key}','Content-Type':'application/json','HTTP-Referer':'https://ai-fantasy-gm.onrender.com','X-Title':'AI Fantasy GM'},json=body)
-    if r.status_code>=400:continue
-    j=r.json();text=((j.get('choices') or [{}])[0].get('message',{}).get('content') or '').strip()
-    if text and text.lower() not in ('safe','user safety: safe'):return text,j.get('model',m)
-   except Exception as e:last=str(e)
- raise HTTPException(502,'AI service error: '+last)
-def league_rules(settings):
- s=settings or {}
- return {'scoring':s.get('scoringSettings') or {},'roster':s.get('rosterSettings') or {},'acquisitions':s.get('acquisitionSettings') or {},'trades':s.get('tradeSettings') or {},'draft':s.get('draftSettings') or {},'playoffs':s.get('playoffSettings') or {},'lineup_slots':s.get('lineupSlotCounts') or s.get('lineupSlotCountsByPosition') or {}}
-ANALYTICS_GUIDE='''BASEBALL ANALYTICS GUIDE: Use process and context, not one-number rankings. For hitters, wOBA values offensive events by run impact; wRC+ normalizes offensive run creation around 100 and adjusts for park/era; xBA/xSLG/xwOBA estimate expected outcomes from contact quality, especially exit velocity and launch angle; hard-hit rate and barrel rate describe quality of contact; K% and BB% describe plate discipline; BABIP can be noisy and should be interpreted with batted-ball profile and speed. For pitchers, FIP focuses on strikeouts, walks, hit batters and home runs; xFIP replaces actual HR rate with expected HR/FB and can help identify regression; K-BB%, swinging-strike rate and CSW% help describe bat-missing and command; xERA/xwOBA against can add contact-quality context. For fantasy, translate MLB skill into the league's actual scoring categories, playing time, lineup role, roster scarcity, category needs and schedule. Separate past production from future projection, regress small samples, and use Statcast quality-of-contact evidence to support—not replace—role and opportunity analysis.'''
-@app.post('/ai/gm')
-async def gm(q:Question,authorization:str=Header(None)):
- u=uid(authorization);l,r,d,p,w=await live(u,True);ss,rank=standings(d,l['team_id']);teams=[compact_team(x,l['season']) for x in d.get('teams',[])];my=next((x for x in teams if x['id']==l['team_id']),None);owners=[{'player':p['name'],'team':t['name'],'team_id':t['id'],'position':p['position'],'points':p['total_points']} for t in teams for p in t['roster']];qwords=set(re.findall(r'[a-z0-9]+',q.question.lower()));ranked=sorted(w,key=lambda x:(x.get('total_points') or 0),reverse=True);relevant=[]
- for x in w:
-  if qwords.intersection(set(re.findall(r'[a-z0-9]+',x['name'].lower()))):relevant.append(x)
- settings=d.get('settings') or {};rules=league_rules(settings)
- data={'league':settings.get('name') or l['league_name'],'season':l['season'],'scoring_period':p,'standings':ss,'my_team':my,'opponent_teams':teams,'player_ownership_index':owners,'live_waivers':list({x['id']:x for x in relevant+ranked[:150]}.values()),'waiver_pool_count':len(w),'league_rules':rules}
- system='You are an elite fantasy baseball GM. The LIVE ESPN JSON supplied here was fetched immediately before this question and is authoritative. Never invent players, stats, positions, rules, or transactions. Interpret league_rules before every fantasy recommendation and prioritize this league scoring over generic rankings. '+ANALYTICS_GUIDE+' Use analytics to explain why a player is likely to sustain or regress, but always combine it with playing time, lineup role, injuries, team context, roster scarcity and the user's actual fantasy needs. Determine ownership from player_ownership_index and waiver availability from live_waivers. Give the recommendation first, then concise evidence. For waivers name the best add and drop. For trades use ACCEPT, DECLINE, or COUNTER and name the manager. Never output safety labels or policy text.'
- c=db();hist=c.execute('SELECT role,content FROM ai_messages WHERE user_id=? ORDER BY id DESC LIMIT 6',(u,)).fetchall();prompt='LIVE ESPN DATA:\n'+json.dumps(data,separators=(',',':'))+'\nRECENT CHAT:\n'+json.dumps([dict(x) for x in reversed(hist)],separators=(',',':'))+'\nQUESTION:\n'+q.question
- ans,model=await ai_call(system,prompt);now=datetime.utcnow().isoformat();c.execute('INSERT INTO ai_messages(user_id,role,content,created_at) VALUES(?,?,?,?)',(u,'user',q.question,now));c.execute('INSERT INTO ai_messages(user_id,role,content,created_at) VALUES(?,?,?,?)',(u,'assistant',ans,now));c.commit();return {'answer':ans,'context':{'scoring_period':p,'my_roster_players':len(my['roster']) if my else 0,'all_opponent_teams':len(teams)-1,'live_waiver_pool_count':len(w),'model':model,'live_data':True,'league_rules_loaded':True,'analytics_guide_loaded':True}}
-@app.get('/')
-def home():return FileResponse(os.path.join(ROOT,'frontend','index.html'))
-@app.on_event('startup')
-def startup():db().close()
