@@ -1,7 +1,7 @@
 (()=>{
 const esc=v=>String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));
 const norm=v=>String(v||'').toUpperCase();
-window.pos=p=>{const x=norm(p?.position);if(x==='RELIEF PITCHER')return'RP';if(x==='STARTING PITCHER')return'SP';return x||'—'};
+window.pos=p=>{const x=norm(p?.position);const elig=(p?.eligible_positions||[]).map(norm);const hitters=['C','1B','2B','3B','SS','LF','CF','RF','OF','DH'];if(x==='RP'){const h=elig.find(v=>hitters.includes(v));if(h)return h;const s=norm(p?.lineup_slot);if(hitters.includes(s))return s;return'—'}if(x==='RELIEF PITCHER')return'RP';if(x==='STARTING PITCHER')return'SP';return x||'—'};
 window.elig=p=>[...new Set((p?.eligible_positions||[]).map(norm).map(x=>x==='RELIEF PITCHER'?'RP':x==='STARTING PITCHER'?'SP':x))].join(' · ')||'—';
 window.statusClass=p=>{const i=norm(p?.injury_status);if(i&&i!=='ACTIVE')return[i==='INJURY_RESERVE'||i==='INJURED_RESERVE'?'IL':i,'il'];const s=norm(p?.lineup_slot);if(s==='BENCH')return['BENCH','bench'];if(p?.status==='WAIVERS'||p?.status==='FREEAGENT')return[p.status,'waiver'];return[s||'ACTIVE','active']};
 const espnSlug=name=>String(name||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
