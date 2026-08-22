@@ -3,8 +3,8 @@ const esc=v=>String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'
 const norm=v=>String(v||'').toUpperCase();
 const hitters=['C','1B','2B','3B','SS','LF','CF','RF','OF','DH'];
 const hitter=v=>hitters.includes(norm(v));
-window.pos=p=>{const x=norm(p?.position);const elig=(p?.eligible_positions||[]).map(norm);if(x==='RP'&&elig.some(hitter))return elig.find(hitter)||'—';if(x==='RELIEF PITCHER'&&elig.some(hitter))return elig.find(hitter)||'—';if(x==='STARTING PITCHER')return'SP';return x||'—'};
-window.elig=p=>{const actual=norm(p?.position);let a=(p?.eligible_positions||[]).map(norm);if(hitter(actual))a=a.filter(x=>x!=='RP'&&x!=='RELIEF PITCHER');return[...new Set(a.map(x=>x==='RELIEF PITCHER'?'RP':x==='STARTING PITCHER'?'SP':x))].join(' · ')||'—'};
+window.pos=p=>{const x=norm(p?.position);const elig=(p?.eligible_positions||[]).map(norm);if((x==='RP'||x==='RELIEF PITCHER'||x==='SP'||x==='STARTING PITCHER')&&elig.some(hitter))return elig.find(hitter)||'—';return x||'—'};
+window.elig=p=>{const actual=norm(p?.position);let a=(p?.eligible_positions||[]).map(norm);if(hitter(actual))a=a.filter(x=>x!=='RP'&&x!=='RELIEF PITCHER'&&x!=='SP'&&x!=='STARTING PITCHER');return[...new Set(a.map(x=>x==='RELIEF PITCHER'?'RP':x==='STARTING PITCHER'?'SP':x))].join(' · ')||'—'};
 window.statusClass=p=>{const i=norm(p?.injury_status);if(i&&i!=='ACTIVE')return[i==='INJURY_RESERVE'||i==='INJURED_RESERVE'?'IL':i,'il'];const s=norm(p?.lineup_slot);if(s==='BENCH')return['BENCH','bench'];if(p?.status==='WAIVERS'||p?.status==='FREEAGENT')return[p.status,'waiver'];return[s||'ACTIVE','active']};
 const espnSlug=name=>String(name||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
 window.espnPlayerUrl=(id,name)=>{const pid=String(id||'').trim();if(!pid)return'https://www.espn.com/mlb/';const slug=espnSlug(name);return`https://www.espn.com/mlb/player/_/id/${encodeURIComponent(pid)}${slug?`/${encodeURIComponent(slug)}`:''}`};
