@@ -1,0 +1,35 @@
+name: Expand verified MLB The Show ratings
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ github.event.head_commit.message != 'Expand verified MLB The Show ratings coverage' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add verified ratings
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('frontend/fixes.js')
+          s = p.read_text(encoding='utf-8')
+          marker = 'const normName=s=>'
+          if marker not in s:
+              raise SystemExit('Expected ratings renderer marker was not found; refusing to modify the file.')
+          additions = '''\nObject.assign(showRatings,{\n"Junior Caminero":88,"Kevin Gausman":88,"Nick Kurtz":88,"Ranger Suarez":88,"Elly De La Cruz":87,"Geraldo Perdomo":87,"Jesus Luzardo":87,"Jesús Luzardo":87,"Luis Castillo":86,"Shota Imanaga":86,"Spencer Schwellenbach":86,"Jackson Chourio":85,"Jose Altuve":85,"José Altuve":85,"Raisel Iglesias":85,"Willy Adames":85,"Yandy Diaz":85,"Yandy Díaz":85,"Ceddanne Rafaela":84,"Gabriel Moreno":84,"James Wood":84,"Jhoan Duran":84,"Eury Pérez":83,"Eury Perez":83,"Chase Burns":82,"Nolan McLean":82,"Pablo López":82,"Pablo Lopez":82,"Phil Maton":82,"Tatsuya Imai":82,"Adrian Morejon":81,"Adrián Morejón":81,"Brady Singer":81,"Bryan Abreu":81,"Dennis Santana":81,"Gabe Speier":81,"Garrett Whitlock":81,"Joe Musgrove":81,"Kenley Jansen":81,"Matthew Boyd":81,"Nick Lodolo":81,"Noah Cameron":81,"Pete Fairbanks":81,"Reynaldo López":81,"Reynaldo Lopez":81,"Robbie Ray":81,"Ryan Helsley":81,"Ryan Walker":81,"Shane Smith":81,"Tanner Bibee":81,"Abner Uribe":80,"Andrew Abbott":80,"Clarke Schmidt":80,"David Bednar":80,"Edwin Uceta":80,"Emilio Pagán":80,"Emilio Pagan":80,"Jacob Misiorowski":80,"Jared Jones":80,"Jeff Hoffman":80,"Jeremiah Estrada":80,"Kyle Bradish":80,"Matt Strahm":80,"Matt Svanson":80,"Michael Wacha":80,\n"Nick Pivetta":88,"Zac Gallen":82\n});\n'''
+          s = s.replace(marker, additions + marker, 1)
+          p.write_text(s, encoding='utf-8')
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add frontend/fixes.js
+          git commit -m 'Expand verified MLB The Show ratings coverage'
+          git push
