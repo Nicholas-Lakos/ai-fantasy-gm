@@ -4,16 +4,12 @@ import httpx
 from fastapi import Query
 from fastapi.responses import FileResponse, HTMLResponse
 from . import main
+from .show_live import live_ratings
 
 POS=main.POS
 SLOT=main.SLOT
 _ORIGINAL_LIVE=main.live
-
-# The production page previously contained an older inline openPlayer() function
-# and never loaded frontend/fixes.js. That made the browser keep rendering the
-# old empty ESPN profile even though the MLB endpoint existed. Inject the
-# current fixes bundle at the server boundary so every Render response uses it.
-FRONTEND_VERSION='20260821-mlb-profile-1'
+FRONTEND_VERSION='20260824-recovery-1'
 
 @main.app.middleware('http')
 async def inject_current_frontend(request, call_next):
@@ -22,11 +18,9 @@ async def inject_current_frontend(request, call_next):
         try:
             html=open(path,'r',encoding='utf-8').read()
             tag=f'<script src="/fixes.js?v={FRONTEND_VERSION}"></script>'
-            if '/fixes.js?' not in html:
-                html=html.replace('</body>',tag+'</body>')
+            if '/fixes.js?' not in html: html=html.replace('</body>',tag+'</body>')
             return HTMLResponse(html,headers={'Cache-Control':'no-store'})
-        except Exception:
-            pass
+        except Exception: pass
     return await call_next(request)
 
 def player_obj(entry):
@@ -55,8 +49,7 @@ async def hydrate_rosters(req,d,period):
             for x in info.get('players',[]) or []:
                 pid=x.get('id') or (x.get('playerPoolEntry') or {}).get('id') or (x.get('player') or {}).get('id')
                 if pid is not None:hydrated[int(pid)]=x
-        except Exception:
-            continue
+        except Exception: continue
     for t in d.get('teams',[]) or []:
         for e in (t.get('roster') or {}).get('entries',[]) or []:
             pid=e.get('playerId'); x=hydrated.get(int(pid)) if pid is not None else None
@@ -69,14 +62,11 @@ async def hydrate_rosters(req,d,period):
     return d
 
 async def live_fixed(u,waivers=False):
-    l,req,d,p,w=await _ORIGINAL_LIVE(u,waivers)
-    d=await hydrate_rosters(req,d,p)
-    return l,req,d,p,w
+    l,req,d,p,w=await _ORIGINAL_LIVE(u,waivers); d=await hydrate_rosters(req,d,p); return l,req,d,p,w
 
 async def pool_fixed(req,p,limit=500):
     filters={'players':{'filterStatus':{'value':['FREEAGENT','WAIVERS']},'limit':limit,'sortPercOwned':{'sortPriority':1,'sortAsc':False}}}
-    try:
-        data=await main.espn(req,['kona_player_info'],p,filters,timeout=35);items=data.get('players') or []
+    try:data=await main.espn(req,['kona_player_info'],p,filters,timeout=35);items=data.get('players') or []
     except Exception:items=[]
     out={}
     for entry in items:
@@ -107,22 +97,16 @@ async def player_card_fixed(req,pid,p):
 
 async def mlb_payload(name):
     async with httpx.AsyncClient(timeout=20,follow_redirects=True) as c:
-        search=await c.get('https://statsapi.mlb.com/api/v1/people/search',params={'names':name,'active':'false','sportIds':'1'})
-        search.raise_for_status()
-        people=search.json().get('people') or []
+        search=await c.get('https://statsapi.mlb.com/api/v1/people/search',params={'names':name,'active':'false','sportIds':'1'});search.raise_for_status();people=search.json().get('people') or []
         exact=next((x for x in people if str(x.get('fullName','')).casefold()==name.casefold()),None) or (people[0] if people else None)
         if not exact:return {'found':False,'name':name}
         pid=exact['id']
         async def stats(group):
-            r=await c.get(f'https://statsapi.mlb.com/api/v1/people/{pid}/stats',params={'stats':'season','group':group,'season':2026,'gameType':'R'})
-            r.raise_for_status()
-            blocks=r.json().get('stats') or []
-            for block in blocks:
+            r=await c.get(f'https://statsapi.mlb.com/api/v1/people/{pid}/stats',params={'stats':'season','group':group,'season':2026,'gameType':'R'});r.raise_for_status()
+            for block in r.json().get('stats') or []:
                 splits=block.get('splits') or []
                 if splits:
-                    # Prefer the league-wide/total split if one is supplied.
-                    split=next((s for s in splits if s.get('isHome') is None and s.get('team') is None),splits[0])
-                    return split.get('stat') or {}
+                    split=next((s for s in splits if s.get('isHome') is None and s.get('team') is None),splits[0]);return split.get('stat') or {}
             return None
         h,p=await asyncio.gather(stats('hitting'),stats('pitching'))
         return {'found':True,'mlb_id':pid,'name':exact.get('fullName'),'position':(exact.get('primaryPosition') or {}).get('abbreviation'),'hitting':h,'pitching':p}
@@ -136,6 +120,15 @@ async def mlb_player_stats(name:str=Query(...,min_length=1)):
 async def mlb_player_stats_api(name:str=Query(...,min_length=1)):
     try:return await mlb_payload(name)
     except Exception as e:return {'found':False,'name':name,'error':str(e)}
+
+@main.app.get('/api/show/live-ratings')
+async def show_live_ratings(force:bool=False):
+    try:return await live_ratings(force)
+    except Exception as e:return {'source':'theSHOWBASE Live Series','game':'MLB The Show 26','count':0,'players':[],'error':str(e)}
+
+@main.app.get('/api/show/live-ratings/health')
+async def show_live_ratings_health():
+    data=await show_live_ratings(False);return {'ok':bool(data.get('count')),'count':data.get('count',0),'source':data.get('source'),'error':data.get('error')}
 
 main.compact_player=compact_player_fixed
 main.compact_team=compact_team_fixed
