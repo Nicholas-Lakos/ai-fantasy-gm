@@ -1,7 +1,13 @@
-const CACHE='ai-fantasy-gm-static-v1';
-self.addEventListener('install', event => event.waitUntil(caches.open(CACHE).then(c => c.addAll(['/','/manifest.webmanifest']))));
-self.addEventListener('fetch', event => {
-  const u=new URL(event.request.url);
-  if (u.origin!==location.origin || u.pathname.startsWith('/auth/') || u.pathname.startsWith('/dashboard') || u.pathname.startsWith('/espn/') || u.pathname.startsWith('/ai/')) return;
-  event.respondWith(caches.match(event.request).then(r=>r||fetch(event.request).then(res=>{const copy=res.clone();caches.open(CACHE).then(c=>c.put(event.request,copy));return res;})));
-});
+const CACHE='ai-fantasy-gm-static-v2';
+const patchFixes=async res=>{const text=await res.text();let s=text;
+s=s.replace('"Nick Pivetta":79','"Nick Pivetta":88');
+s=s.replace('"Zac Gallen":84','"Zac Gallen":82');
+s=s.replace('"Davis Martin":72','"Davis Martin":72,"Brendan Donovan":80');
+s=s.replace('const backend=Number(p?.overall_value);if(Number.isFinite(backend))return Math.round(backend);return 70};','return null};');
+s=s.replace("const ovrClass=o=>o>=90?'show-elite':o>=80?'show-great':o>=70?'show-good':o>=60?'show-average':o>=50?'show-below':'show-poor';","const ovrClass=o=>o==null?'':o>=90?'show-elite':o>=80?'show-great':o>=70?'show-good':o>=60?'show-average':o>=50?'show-below':'show-poor';");
+s=s.replace('const o=showOvr(p);return`<tr','const o=showOvr(p);const displayOvr=o==null?\'—\':String(o);return`<tr');
+s=s.replace('data-show-ovr="${o}">${o}','data-show-ovr="${o??\'\'}">${displayOvr}');
+return new Response(s,{headers:{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'}})};
+self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(c=>c.addAll(['/','/manifest.webmanifest'])).then(()=>self.skipWaiting())));
+self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
+self.addEventListener('fetch',event=>{const u=new URL(event.request.url);if(u.origin!==location.origin||u.pathname.startsWith('/auth/')||u.pathname.startsWith('/dashboard')||u.pathname.startsWith('/espn/')||u.pathname.startsWith('/ai/'))return;if(u.pathname.endsWith('/fixes.js')){event.respondWith(fetch(event.request).then(patchFixes));return}event.respondWith(caches.match(event.request).then(r=>r||fetch(event.request).then(res=>{const copy=res.clone();caches.open(CACHE).then(c=>c.put(event.request,copy));return res;})))});
