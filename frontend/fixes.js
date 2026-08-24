@@ -50,5 +50,25 @@ function injectTradeTab(){
  const st=document.createElement('style');st.textContent='.trade-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.trade-select{margin-top:9px}.trade-analyze{margin-top:14px}.trade-verdict{padding:18px;border-radius:12px;margin-bottom:18px;border:1px solid var(--line)}.trade-good{background:#0b3325}.trade-bad{background:#3a1820}.trade-even{background:#18283a}.trade-title{font-size:27px;font-weight:950;margin:5px 0}.trade-diff{font-size:16px;font-weight:850}.trade-columns{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:18px}.trade-player{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #172a3e}.trade-player span{color:var(--muted);font-size:12px}.trade-total{font-weight:900;padding-top:10px}.trade-ai{margin-top:14px;padding:14px;background:#091625;border-radius:10px;white-space:pre-wrap;line-height:1.55}.trade-grid .card{grid-column:auto}@media(max-width:700px){.trade-grid,.trade-columns{grid-template-columns:1fr}}';document.head.appendChild(st);
  loadTradePlayers();
 }
-if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',injectTradeTab);else injectTradeTab();
+
+async function requestNextWeekProjection(){
+ const el=document.getElementById('projectionResult');if(!el)return;
+ el.innerHTML='<div class="projection-loading">🔮 AI is analyzing your roster, league scoring, recent production, and the upcoming scoring period…</div>';
+ try{
+  const j=await api('/ai/gm',{method:'POST',body:JSON.stringify({question:`Predict MY team's total fantasy points for the UPCOMING ESPN scoring week. Use the live roster and league scoring settings you have. Give a realistic numeric projected team total, a reasonable low-to-high range, and confidence (High/Medium/Low). Then list each of my active players with an estimated contribution to the weekly total, account for likely playing time, pitcher starts, injuries, and the number of games where possible. Do not use the current week's points as the forecast. Clearly label this as a projection, not a guarantee.`})});
+  const answer=j.answer||'No projection returned.';
+  el.innerHTML=`<div class="projection-answer">${esc(answer).replace(/\n/g,'<br>')}</div>`;
+ }catch(e){el.innerHTML=`<div class="notice err">Projection error: ${esc(e.message)}</div>`}
+}
+window.requestNextWeekProjection=requestNextWeekProjection;
+function injectProjectionTab(){
+ if(document.getElementById('projection'))return;
+ const nav=document.querySelector('.nav');if(nav){const b=document.createElement('button');b.innerHTML='🔮 Next Week';b.onclick=function(){go('projection',b);requestNextWeekProjection()};nav.insertBefore(b,nav.querySelector('button[onclick*="go(\'ai\'"]')||null)}
+ const mobile=document.querySelector('.mobile');if(mobile){const b=document.createElement('button');b.innerHTML='<span class="icon">🔮</span>Next Week';b.onclick=function(){go('projection',b);requestNextWeekProjection()};mobile.appendChild(b)}
+ const main=document.querySelector('.main');if(!main)return;
+ const s=document.createElement('section');s.id='projection';s.className='screen';s.innerHTML=`<div class="top"><div><div class="ey">AI FORECAST</div><div class="title">Next Week Projection</div><div class="muted">AI predicts your team's upcoming ESPN scoring-week points using your live roster and league settings.</div></div><button class="btn" onclick="requestNextWeekProjection()">Refresh Projection</button></div><div class="card projection-card"><div class="projection-head"><div><div class="ey">UPCOMING WEEK</div><h2>🔮 Projected Team Points</h2></div><div class="projection-badge">AI GM</div></div><div id="projectionResult" class="projection-result"><div class="muted">Click Refresh Projection to get your forecast.</div></div></div><div class="notice">Projection uses the live ESPN roster and scoring settings available to the AI. It is an estimate, not a guarantee.</div>`;
+ main.appendChild(s);
+ const st=document.createElement('style');st.textContent='.projection-card{margin-top:16px}.projection-head{display:flex;justify-content:space-between;align-items:center;gap:15px}.projection-badge{padding:7px 11px;border-radius:999px;background:#152f4a;font-weight:900;font-size:12px}.projection-result{margin-top:18px}.projection-loading{padding:22px;border-radius:12px;background:#091625;font-weight:800}.projection-answer{padding:22px;border-radius:12px;background:#091625;line-height:1.65;font-size:15px;white-space:normal}.projection-answer br{content:"";display:block;margin:6px 0}@media(max-width:700px){.projection-head{align-items:flex-start;flex-direction:column}}';document.head.appendChild(st);
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{injectTradeTab();injectProjectionTab()});else{injectTradeTab();injectProjectionTab()}
 })();
