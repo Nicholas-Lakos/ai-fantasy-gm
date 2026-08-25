@@ -1,4 +1,5 @@
-const CACHE='ai-fantasy-gm-static-v2';
+const CACHE='ai-fantasy-gm-static-v3';
+const SHOW_RATINGS='https://raw.githubusercontent.com/Nicholas-Lakos/ai-fantasy-gm/main/frontend/show_live_ratings.json';
 const patchFixes=async res=>{const text=await res.text();let s=text;
 s=s.replace('"Nick Pivetta":79','"Nick Pivetta":88');
 s=s.replace('"Zac Gallen":84','"Zac Gallen":82');
@@ -10,4 +11,4 @@ s=s.replace('data-show-ovr="${o}">${o}','data-show-ovr="${o??\'\'}">${displayOvr
 return new Response(s,{headers:{'Content-Type':'application/javascript; charset=utf-8','Cache-Control':'no-store'}})};
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(c=>c.addAll(['/','/manifest.webmanifest'])).then(()=>self.skipWaiting())));
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
-self.addEventListener('fetch',event=>{const u=new URL(event.request.url);if(u.origin!==location.origin||u.pathname.startsWith('/auth/')||u.pathname.startsWith('/dashboard')||u.pathname.startsWith('/espn/')||u.pathname.startsWith('/ai/'))return;if(u.pathname.endsWith('/fixes.js')){event.respondWith(fetch(event.request).then(patchFixes));return}event.respondWith(caches.match(event.request).then(r=>r||fetch(event.request).then(res=>{const copy=res.clone();caches.open(CACHE).then(c=>c.put(event.request,copy));return res;})))});
+self.addEventListener('fetch',event=>{const u=new URL(event.request.url);if(u.pathname==='/api/show/live-ratings'){event.respondWith(fetch(SHOW_RATINGS,{cache:'no-store'}).then(r=>new Response(r.body,{status:r.status,headers:{'Content-Type':'application/json','Cache-Control':'no-store'}})));return}if(u.origin!==location.origin||u.pathname.startsWith('/auth/')||u.pathname.startsWith('/dashboard')||u.pathname.startsWith('/espn/')||u.pathname.startsWith('/ai/'))return;if(u.pathname.endsWith('/fixes.js')){event.respondWith(fetch(event.request).then(patchFixes));return}event.respondWith(caches.match(event.request).then(r=>r||fetch(event.request).then(res=>{const copy=res.clone();caches.open(CACHE).then(c=>c.put(event.request,copy));return res;})))});
