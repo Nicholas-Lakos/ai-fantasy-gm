@@ -1,3 +1,4 @@
+# Automatically refreshes the full MLB The Show 26 Live Series OVR dataset.
 import json
 import re
 from datetime import datetime, timezone
@@ -38,8 +39,7 @@ def parse_page(html):
                 ovr = int(m.group(1))
         if ovr is None:
             continue
-        name = cells[0]
-        name = re.sub(r"\s+Live\b.*$", "", name, flags=re.I).strip()
+        name = re.sub(r"\s+Live\b.*$", "", cells[0], flags=re.I).strip()
         if name and len(name) > 2:
             rows.append({"name": name, "overall": ovr})
     return rows
