@@ -2,6 +2,10 @@ name: Update MLB The Show Live Ratings
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - 'show_live_ratings.py'
+      - '.github/workflows/update-show-ratings.yml'
   schedule:
     - cron: '17 */6 * * *'
 
