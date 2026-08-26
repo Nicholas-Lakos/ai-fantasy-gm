@@ -12,15 +12,21 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: show-live-ratings
+  cancel-in-progress: false
+
 jobs:
   update:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install cloudscraper beautifulsoup4
+      - run: pip install requests
       - run: python show_live_ratings.py
       - name: Commit updated ratings
         run: |
@@ -29,4 +35,5 @@ jobs:
           git add frontend/show_live_ratings.json
           git diff --cached --quiet && exit 0
           git commit -m 'Update MLB The Show Live Series ratings'
-          git push
+          git pull --rebase origin main
+          git push origin HEAD:main
