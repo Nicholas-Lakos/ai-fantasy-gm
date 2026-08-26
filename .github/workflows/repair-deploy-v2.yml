@@ -1,0 +1,59 @@
+name: Repair Live OVR deployment
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/main.py'
+      - '.github/workflows/repair-deploy-v2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Repair Live OVR block
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('backend/main.py')
+          s=p.read_text(encoding='utf-8')
+          marker='# LIVE_SHOW_OVR_SYSTEM_V1'
+          app_line="app=FastAPI(title='AI Fantasy GM',version='11.2');app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_methods=['*'],allow_headers=['*'])"
+          if marker not in s: raise SystemExit('Live OVR marker missing')
+          if s.count(app_line)!=1: raise SystemExit(f'Expected one FastAPI app initialization, found {s.count(app_line)}')
+          start=s.index(marker)
+          app_pos=s.index(app_line,start)
+          block=s[start:app_pos]
+          # Previous patch wrote literal \\n sequences into this block.
+          block=block.replace('\\\\n','\\n')
+          # If the block still contains escaped newlines, decode them.
+          block=block.replace('\\n','\n')
+          s=s[:start]+block+s[app_pos:]
+          app_pos=s.index(app_line)
+          marker_pos=s.index(marker)
+          if app_pos>marker_pos:
+              s=s[:app_pos]+s[app_pos+len(app_line):]
+              marker_pos=s.index(marker)
+              s=s[:marker_pos]+app_line+'\n'+s[marker_pos:]
+          p.write_text(s,encoding='utf-8')
+          PY
+      - name: Validate Python
+        run: python -m py_compile backend/main.py backend/show_server.py backend/show_live.py
+      - name: Commit repaired source
+        run: |
+          git config user.name 'AI Fantasy GM Bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/main.py
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Repair Live OVR Python source'
+          git push origin HEAD:main
