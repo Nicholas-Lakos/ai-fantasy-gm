@@ -1,64 +1,52 @@
-import asyncio, html, re, time
-from html.parser import HTMLParser
+import asyncio, html, re, time, unicodedata
 import httpx
 
-BASE_URL='https://www.theshowbase.com/series/live'
-CACHE_TTL=21600
-_cache={'at':0.0,'players':[]}
-
-class RowParser(HTMLParser):
-    def __init__(self):
-        super().__init__(convert_charrefs=True); self.rows=[]; self.in_tr=False; self.in_td=False; self.cells=[]; self.buf=[]
-    def handle_starttag(self,tag,attrs):
-        if tag=='tr': self.in_tr=True; self.cells=[]
-        elif tag=='td' and self.in_tr: self.in_td=True; self.buf=[]
-    def handle_endtag(self,tag):
-        if tag=='td' and self.in_td:
-            self.cells.append(' '.join(''.join(self.buf).split())); self.in_td=False
-        elif tag=='tr' and self.in_tr:
-            if self.cells:self.rows.append(self.cells)
-            self.in_tr=False
-    def handle_data(self,data):
-        if self.in_td:self.buf.append(data)
+BASE_URL='https://www.theshowbase.com/26/player/{}-live'
+CACHE_TTL=3600
+_cache={}
 
 def norm(s):
     s=html.unescape(str(s or '')).replace('\xa0',' ')
-    s=re.sub(r'[^A-Za-z0-9 .\'’\-]+','',s).lower()
-    s=re.sub(r'\s+',' ',s).strip()
-    return s
+    s=unicodedata.normalize('NFKD',s).encode('ascii','ignore').decode('ascii').lower()
+    return re.sub(r'\s+',' ',re.sub(r'[^a-z0-9 ]','',s)).strip()
 
-def parse_page(text):
-    p=RowParser();p.feed(text);out=[]
-    for cells in p.rows:
-        # TheSHOWBASE's ratings table is Name / OVR / Meta / Position ...
-        for i,c in enumerate(cells):
-            if re.fullmatch(r'\d{1,2}',c or '') and 40 <= int(c) <= 99 and i>0:
-                name=cells[i-1].strip()
-                if name and len(name)>1 and not re.fullmatch(r'\d+',name):
-                    out.append({'name':html.unescape(name),'overall':int(c)})
-                break
-    return out
+def slug(name):
+    s=unicodedata.normalize('NFKD',str(name or '')).encode('ascii','ignore').decode('ascii').lower()
+    return re.sub(r'[^a-z0-9]+','-',s).strip('-')
 
-async def _fetch_page(client,page):
-    r=await client.get(BASE_URL,params={'page':page},headers={'User-Agent':'AI-Fantasy-GM/1.0','Accept':'text/html'},timeout=30)
-    r.raise_for_status();return parse_page(r.text)
+def parse_ovr(text):
+    m=re.search(r'\b([5-9]\d|100)\s+OVR\b',text,re.I)
+    return int(m.group(1)) if m else None
 
-async def load_live(force=False):
-    now=time.time()
-    if not force and _cache['players'] and now-_cache['at'] < CACHE_TTL:return _cache['players']
-    async with httpx.AsyncClient(follow_redirects=True) as c:
-        pages=await asyncio.gather(*[_fetch_page(c,p) for p in range(1,42)],return_exceptions=True)
-    merged={}
-    for rows in pages:
-        if isinstance(rows,Exception):continue
-        for x in rows:
-            k=norm(x['name'])
-            if k: merged[k]=x
-    players=list(merged.values())
-    if players:
-        _cache.update(at=now,players=players)
-    return players
+async def _fetch_one(client,name,sem,force=False):
+    key=norm(name); now=time.time()
+    cached=_cache.get(key)
+    if not force and cached and now-cached['at'] < CACHE_TTL:
+        return cached['row']
+    if not key:return None
+    async with sem:
+        try:
+            r=await client.get(BASE_URL.format(slug(name)),headers={'User-Agent':'AI-Fantasy-GM/1.0','Accept':'text/html'},timeout=15)
+            if r.status_code != 200:return None
+            ovr=parse_ovr(r.text)
+            if ovr is None:return None
+            row={'name':name,'overall':ovr,'source':'theSHOWBASE Live Series'}
+            _cache[key]={'at':now,'row':row}
+            return row
+        except Exception:
+            return None
+
+async def live_ratings_for_names(names,force=False):
+    unique=[];seen=set()
+    for name in names or []:
+        k=norm(name)
+        if k and k not in seen:
+            seen.add(k);unique.append(name)
+    sem=asyncio.Semaphore(10)
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        rows=await asyncio.gather(*[_fetch_one(client,n,sem,force) for n in unique])
+    rows=[r for r in rows if r]
+    return {'source':'theSHOWBASE Live Series','game':'MLB The Show 26','league_players':len(unique),'matched_players':len(rows),'updated_at':time.time(),'players':rows}
 
 async def live_ratings(force=False):
-    players=await load_live(force)
-    return {'source':'theSHOWBASE Live Series','game':'MLB The Show 26','count':len(players),'updated_at':_cache['at'],'players':players}
+    return {'source':'theSHOWBASE Live Series','game':'MLB The Show 26','count':0,'updated_at':0,'players':[]}
