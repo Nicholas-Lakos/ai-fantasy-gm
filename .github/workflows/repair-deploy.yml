@@ -27,27 +27,43 @@ jobs:
           marker = '# LIVE_SHOW_OVR_SYSTEM_V1'
           app_line = "app=FastAPI(title='AI Fantasy GM',version='11.2');app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_methods=['*'],allow_headers=['*'])"
           if marker not in s:
-              raise SystemExit('Live OVR marker missing; refusing to modify main.py')
-          # The live OVR endpoint was inserted before FastAPI's app object existed.
-          # Move the app initialization above that endpoint block.
+              raise SystemExit('Live OVR marker missing')
           if s.count(app_line) != 1:
-              raise SystemExit(f'Expected exactly one FastAPI initialization, found {s.count(app_line)}')
-          s = s.replace(app_line + '\n', '', 1)
-          s = s.replace(marker, app_line + '\n' + marker, 1)
+              raise SystemExit(f'Expected one FastAPI initialization, found {s.count(app_line)}')
+          before, after = s.split(marker, 1)
+          before = before.replace(app_line + '\n', '')
+          s = before + app_line + '\n' + marker + after
           p.write_text(s, encoding='utf-8')
           PY
-      - name: Remove duplicate Live OVR route from show_server
+      - name: Normalize show_server
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('backend/show_server.py')
-          s = p.read_text(encoding='utf-8')
-          old = "from . import run\nfrom . import main\nfrom .show_live import live_ratings\nfrom fastapi import Query\n\n@main.app.get('/api/show/live-ratings')\nasync def show_live_ratings(force: bool = Query(False)):\n    return await live_ratings(force)\n\n@main.app.get('/api/show/live-ratings/health')\nasync def show_live_ratings_health():\n    data=await live_ratings(False)\n    return {'ok':True,'count':data.get('count',0),'source':data.get('source')}\n"
-          new = "from . import run\nfrom . import main\n"
-          if old not in s:
-              raise SystemExit('Expected duplicate show_server routes were not found')
-          s = s.replace(old, new, 1)
-          p.write_text(s, encoding='utf-8')
+          cat > backend/show_server.py <<'PY'
+          from . import main
+          from .show_live import live_ratings_for_names
+          from fastapi import Header, Query
+
+          @main.app.get('/api/show/live-ratings')
+          async def show_live_ratings(force: bool = Query(False), authorization: str = Header(None)):
+              u = main.uid(authorization)
+              league = main.league_row(u)
+              req = main.req_for(league)
+              data = await main.espn(req, ['mTeam', 'mRoster', 'mStatus'])
+              names = []
+              seen = set()
+              for team in data.get('teams', []):
+                  for entry in (team.get('roster') or {}).get('entries', []):
+                      player = ((entry.get('playerPoolEntry') or {}).get('player') or {})
+                      name = player.get('fullName')
+                      if name:
+                          key = main.re.sub(r'\s+', ' ', name.strip()).casefold()
+                          if key not in seen:
+                              seen.add(key)
+                              names.append(name)
+              return await live_ratings_for_names(names, force)
+
+          @main.app.get('/api/show/live-ratings/health')
+          async def show_live_ratings_health():
+              return {'ok': True, 'source': 'theSHOWBASE Live Series', 'mode': 'league-player-only'}
           PY
       - name: Validate Python files
         run: python -m py_compile backend/main.py backend/show_server.py backend/show_live.py
@@ -56,6 +72,6 @@ jobs:
           git config user.name 'AI Fantasy GM Bot'
           git config user.email 'actions@users.noreply.github.com'
           git add backend/main.py backend/show_server.py .github/workflows/repair-deploy.yml
-          git diff --cached --quiet && exit 0
-          git commit -m 'Fix deployment initialization order and duplicate OVR route'
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Fix Live OVR deployment and validate backend'
           git push origin HEAD:main
