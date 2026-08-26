@@ -4,7 +4,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 
 BASE = "https://www.theshowbase.com/players?series=Live&page={}"
@@ -32,38 +32,30 @@ def parse_page(html):
             continue
         if not name or not 40 <= ovr <= 99:
             continue
-        # Table order on theSHOWBASE: Card, Name, OVR, Meta, Position,
-        # Buy, Sell, Profit, Profit %, Variations, Bats, Throws, Team, Rarity, Series.
         position = cells[4].strip()
         team = cells[12].strip()
         rarity_raw = cells[13].strip()
         m = re.search(r"Red Diamond|Diamond|Gold|Silver|Bronze|Common", rarity_raw, re.I)
         rarity = m.group(0).title() if m else rarity_raw
-        rows.append({
-            "name": name,
-            "overall": ovr,
-            "position": position,
-            "team": team,
-            "rarity": rarity,
-        })
+        rows.append({"name": name, "overall": ovr, "position": position, "team": team, "rarity": rarity})
     return rows
 
 
 def main():
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (compatible; AI-Fantasy-GM-Live-Ratings/3.0)",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    # theSHOWBASE may challenge plain requests, so use a browser-like session.
+    scraper = cloudscraper.create_scraper(browser={"browser": "chrome", "platform": "windows", "mobile": False})
+    scraper.headers.update({
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.theshowbase.com/series/live",
     })
 
     by_name = {}
-    page_counts = []
     for page in range(1, MAX_PAGES + 1):
-        r = session.get(BASE.format(page), timeout=45)
+        r = scraper.get(BASE.format(page), timeout=45)
+        print(f"page {page}: HTTP {r.status_code}, {len(r.text)} bytes")
         r.raise_for_status()
         parsed = parse_page(r.text)
-        page_counts.append(len(parsed))
         print(f"page {page}: {len(parsed)} cards")
         for row in parsed:
             key = norm(row["name"])
@@ -71,12 +63,8 @@ def main():
                 by_name[key] = row
 
     players = sorted(by_name.values(), key=lambda x: x["name"].lower())
-    # 2,036 cards are currently reported by the source. Refuse to publish a
-    # partial scrape so the website can never silently replace good data with bad data.
     if len(players) < 1900:
-        raise RuntimeError(
-            f"Only parsed {len(players)} unique Live Series players from {MAX_PAGES} pages; refusing to publish incomplete data"
-        )
+        raise RuntimeError(f"Only parsed {len(players)} unique Live Series players; refusing to publish incomplete data")
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     payload = {
