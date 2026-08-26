@@ -4,6 +4,7 @@ const patchFixes=async res=>{const text=await res.text();let s=text;
 s=s.replace('"Nick Pivetta":79','"Nick Pivetta":88');
 s=s.replace('"Zac Gallen":84','"Zac Gallen":82');
 s=s.replace('"Davis Martin":72','"Davis Martin":72,"Brendan Donovan":80');
+s=s.replace('"Geraldo Perdomo":87','"Geraldo Perdomo":77');
 s=s.replace('const backend=Number(p?.overall_value);if(Number.isFinite(backend))return Math.round(backend);return 70};','return null};');
 s=s.replace("const ovrClass=o=>o>=90?'show-elite':o>=80?'show-great':o>=70?'show-good':o>=60?'show-average':o>=50?'show-below':'show-poor';","const ovrClass=o=>o==null?'':o>=90?'show-elite':o>=80?'show-great':o>=70?'show-good':o>=60?'show-average':o>=50?'show-below':'show-poor';");
 s=s.replace('const o=showOvr(p);return`<tr','const o=showOvr(p);const displayOvr=o==null?\'—\':String(o);return`<tr');
