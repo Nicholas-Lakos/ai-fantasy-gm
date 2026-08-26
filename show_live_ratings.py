@@ -3,64 +3,66 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
-import cloudscraper
-from bs4 import BeautifulSoup
+import requests
 
-BASE = "https://www.theshowbase.com/players?series=Live&page={}"
+SOURCE = "https://www.theshowbase.com/players?series=Live&page={}"
 OUT = Path("frontend/show_live_ratings.json")
-MAX_PAGES = 41
+MAX_PAGES = 136  # theSHOWBASE player table currently reports 2,036 cards at 15/page
 
 
 def norm(name):
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", "", name.lower())).strip()
 
 
-def parse_page(html):
-    soup = BeautifulSoup(html, "html.parser")
+def parse_markdown(text):
     rows = []
-    for tr in soup.select("tr"):
-        cells = [c.get_text(" ", strip=True) for c in tr.select("th,td")]
-        if len(cells) < 15:
+    # Jina Reader converts the source table to Markdown. The table columns are:
+    # Card | Name | OVR | Meta Score | Position | ... | Team | Rarity | Series | ...
+    for line in text.splitlines():
+        if not line.startswith("|"):
             continue
-        if cells[1].lower() in {"name", "player"}:
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 15 or cells[1].lower() in {"name", "player"} or set(cells[1]) <= {"-", ":"}:
             continue
-        name = cells[1].strip()
         try:
-            ovr = int(cells[2].strip())
-        except (TypeError, ValueError):
+            ovr = int(re.match(r"^\d{1,3}$", cells[2]).group())
+        except (AttributeError, ValueError):
             continue
+        name = cells[1]
         if not name or not 40 <= ovr <= 99:
             continue
-        position = cells[4].strip()
-        team = cells[12].strip()
-        rarity_raw = cells[13].strip()
-        m = re.search(r"Red Diamond|Diamond|Gold|Silver|Bronze|Common", rarity_raw, re.I)
-        rarity = m.group(0).title() if m else rarity_raw
-        rows.append({"name": name, "overall": ovr, "position": position, "team": team, "rarity": rarity})
+        if cells[14].lower() != "live":
+            continue
+        rarity_match = re.search(r"Red Diamond|Diamond|Gold|Silver|Bronze|Common", cells[13], re.I)
+        rows.append({
+            "name": name,
+            "overall": ovr,
+            "position": cells[4],
+            "team": cells[12],
+            "rarity": rarity_match.group(0).title() if rarity_match else cells[13],
+        })
     return rows
 
 
 def main():
-    # theSHOWBASE may challenge plain requests, so use a browser-like session.
-    scraper = cloudscraper.create_scraper(browser={"browser": "chrome", "platform": "windows", "mobile": False})
-    scraper.headers.update({
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.theshowbase.com/series/live",
-    })
-
+    session = requests.Session()
+    session.headers.update({"User-Agent": "AI-Fantasy-GM-Live-Ratings/4.0"})
     by_name = {}
+
     for page in range(1, MAX_PAGES + 1):
-        r = scraper.get(BASE.format(page), timeout=45)
+        source_url = SOURCE.format(page)
+        # Jina Reader fetches and renders the public source page server-side,
+        # avoiding the 403/anti-bot response GitHub Actions receives directly.
+        jina_url = "https://r.jina.ai/" + source_url
+        r = session.get(jina_url, timeout=60)
         print(f"page {page}: HTTP {r.status_code}, {len(r.text)} bytes")
         r.raise_for_status()
-        parsed = parse_page(r.text)
-        print(f"page {page}: {len(parsed)} cards")
+        parsed = parse_markdown(r.text)
+        print(f"page {page}: {len(parsed)} Live cards")
         for row in parsed:
-            key = norm(row["name"])
-            if key:
-                by_name[key] = row
+            by_name[norm(row["name"])] = row
 
     players = sorted(by_name.values(), key=lambda x: x["name"].lower())
     if len(players) < 1900:
