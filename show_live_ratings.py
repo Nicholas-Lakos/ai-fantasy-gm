@@ -1,4 +1,4 @@
-# Automatically refreshes the full MLB The Show 26 Live Series OVR dataset.
+# Build the current MLB The Show 26 Live Series database used by the website.
 import json
 import re
 from datetime import datetime, timezone
@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 
 BASE = "https://www.theshowbase.com/players?series=Live&page={}"
 OUT = Path("frontend/show_live_ratings.json")
-MAX_PAGES = 200
+MAX_PAGES = 41
 
 
 def norm(name):
@@ -21,14 +21,9 @@ def parse_page(html):
     rows = []
     for tr in soup.select("tr"):
         cells = [c.get_text(" ", strip=True) for c in tr.select("th,td")]
-        # TheSHOWBASE currently exposes these columns in the overview table:
-        # Card, Name, OVR, Meta Score, Position, Buy Now, Sell Now, Profit,
-        # Profit %, Variations, Bats, Throws, Team, Rarity, Series, ...
         if len(cells) < 15:
             continue
         if cells[1].lower() in {"name", "player"}:
-            continue
-        if cells[14].strip().lower() != "live":
             continue
         name = cells[1].strip()
         try:
@@ -37,12 +32,19 @@ def parse_page(html):
             continue
         if not name or not 40 <= ovr <= 99:
             continue
+        # Table order on theSHOWBASE: Card, Name, OVR, Meta, Position,
+        # Buy, Sell, Profit, Profit %, Variations, Bats, Throws, Team, Rarity, Series.
+        position = cells[4].strip()
+        team = cells[12].strip()
+        rarity_raw = cells[13].strip()
+        m = re.search(r"Red Diamond|Diamond|Gold|Silver|Bronze|Common", rarity_raw, re.I)
+        rarity = m.group(0).title() if m else rarity_raw
         rows.append({
             "name": name,
             "overall": ovr,
-            "position": cells[4].strip(),
-            "team": cells[12].strip(),
-            "rarity": re.sub(r"^.*?\b(Red Diamond|Diamond|Gold|Silver|Bronze|Common)\b.*$", r"\1", cells[13].strip(), flags=re.I),
+            "position": position,
+            "team": team,
+            "rarity": rarity,
         })
     return rows
 
@@ -50,34 +52,30 @@ def parse_page(html):
 def main():
     session = requests.Session()
     session.headers.update({
-        "User-Agent": "Mozilla/5.0 (compatible; AI-Fantasy-GM-Live-Ratings/2.0)",
-        "Accept": "text/html,application/xhtml+xml",
+        "User-Agent": "Mozilla/5.0 (compatible; AI-Fantasy-GM-Live-Ratings/3.0)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
     })
 
     by_name = {}
-    empty_pages = 0
-
-    # There are currently 136 pages (15 cards/page) for the 2,036 Live Series cards.
-    # We intentionally allow more pages so the updater keeps working if the database grows.
+    page_counts = []
     for page in range(1, MAX_PAGES + 1):
-        r = session.get(BASE.format(page), timeout=30)
+        r = session.get(BASE.format(page), timeout=45)
         r.raise_for_status()
         parsed = parse_page(r.text)
-        if not parsed:
-            empty_pages += 1
-            if page > 136 and empty_pages >= 2:
-                break
-            continue
-        empty_pages = 0
+        page_counts.append(len(parsed))
+        print(f"page {page}: {len(parsed)} cards")
         for row in parsed:
             key = norm(row["name"])
             if key:
                 by_name[key] = row
 
     players = sorted(by_name.values(), key=lambda x: x["name"].lower())
+    # 2,036 cards are currently reported by the source. Refuse to publish a
+    # partial scrape so the website can never silently replace good data with bad data.
     if len(players) < 1900:
         raise RuntimeError(
-            f"Only parsed {len(players)} Live Series players; refusing to publish incomplete data"
+            f"Only parsed {len(players)} unique Live Series players from {MAX_PAGES} pages; refusing to publish incomplete data"
         )
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
