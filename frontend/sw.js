@@ -1,4 +1,4 @@
-const CACHE='ai-fantasy-gm-static-v3';
+const CACHE='ai-fantasy-gm-static-v4';
 const SHOW_RATINGS='https://raw.githubusercontent.com/Nicholas-Lakos/ai-fantasy-gm/main/frontend/show_live_ratings.json';
 const patchFixes=async res=>{const text=await res.text();let s=text;
 s=s.replace('"Nick Pivetta":79','"Nick Pivetta":88');
