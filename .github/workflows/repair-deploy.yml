@@ -1,0 +1,61 @@
+name: Repair deployment
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Repair FastAPI initialization order
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('backend/main.py')
+          s = p.read_text(encoding='utf-8')
+          marker = '# LIVE_SHOW_OVR_SYSTEM_V1'
+          app_line = "app=FastAPI(title='AI Fantasy GM',version='11.2');app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_methods=['*'],allow_headers=['*'])"
+          if marker not in s:
+              raise SystemExit('Live OVR marker missing; refusing to modify main.py')
+          # The live OVR endpoint was inserted before FastAPI's app object existed.
+          # Move the app initialization above that endpoint block.
+          if s.count(app_line) != 1:
+              raise SystemExit(f'Expected exactly one FastAPI initialization, found {s.count(app_line)}')
+          s = s.replace(app_line + '\n', '', 1)
+          s = s.replace(marker, app_line + '\n' + marker, 1)
+          p.write_text(s, encoding='utf-8')
+          PY
+      - name: Remove duplicate Live OVR route from show_server
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('backend/show_server.py')
+          s = p.read_text(encoding='utf-8')
+          old = "from . import run\nfrom . import main\nfrom .show_live import live_ratings\nfrom fastapi import Query\n\n@main.app.get('/api/show/live-ratings')\nasync def show_live_ratings(force: bool = Query(False)):\n    return await live_ratings(force)\n\n@main.app.get('/api/show/live-ratings/health')\nasync def show_live_ratings_health():\n    data=await live_ratings(False)\n    return {'ok':True,'count':data.get('count',0),'source':data.get('source')}\n"
+          new = "from . import run\nfrom . import main\n"
+          if old not in s:
+              raise SystemExit('Expected duplicate show_server routes were not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
+          PY
+      - name: Validate Python files
+        run: python -m py_compile backend/main.py backend/show_server.py backend/show_live.py
+      - name: Commit repair
+        run: |
+          git config user.name 'AI Fantasy GM Bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add backend/main.py backend/show_server.py .github/workflows/repair-deploy.yml
+          git diff --cached --quiet && exit 0
+          git commit -m 'Fix deployment initialization order and duplicate OVR route'
+          git push origin HEAD:main
