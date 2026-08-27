@@ -35,3 +35,37 @@ window.requestNextWeekProjection=requestNextWeekProjection;
 function injectProjectionTab(){if(document.getElementById('projection'))return;const nav=document.querySelector('.nav');if(nav){const b=document.createElement('button');b.innerHTML='🔮 Next Week';b.onclick=function(){go('projection',b);requestNextWeekProjection()};nav.insertBefore(b,nav.querySelector('button[onclick*="go(\'ai\'"]')||null)}const mobile=document.querySelector('.mobile');if(mobile){const b=document.createElement('button');b.innerHTML='<span class="icon">🔮</span>Next Week';b.onclick=function(){go('projection',b);requestNextWeekProjection()};mobile.appendChild(b)}const main=document.querySelector('.main');if(!main)return;const s=document.createElement('section');s.id='projection';s.className='screen';s.innerHTML=`<div class="top"><div><div class="ey">AI FORECAST</div><div class="title">Next Week Projection</div><div class="muted">AI predicts your team's upcoming ESPN scoring-week points using your live roster and league settings.</div></div><button class="btn" onclick="requestNextWeekProjection()">Refresh Projection</button></div><div class="card projection-card"><div class="projection-head"><div><div class="ey">UPCOMING WEEK</div><h2>🔮 Projected Team Points</h2></div><div class="projection-badge">AI GM</div></div><div id="projectionResult" class="projection-result"><div class="muted">Click Refresh Projection to get your forecast.</div></div></div><div class="notice">Projection uses the live ESPN roster and scoring settings available to the AI. It is an estimate, not a guarantee.</div>`;main.appendChild(s);const st=document.createElement('style');st.textContent='.projection-card{margin-top:16px}.projection-head{display:flex;justify-content:space-between;align-items:center;gap:15px}.projection-badge{padding:7px 11px;border-radius:999px;background:#152f4a;font-weight:900;font-size:12px}.projection-result{margin-top:18px}.projection-loading{padding:22px;border-radius:12px;background:#091625;font-weight:800}.projection-answer{padding:22px;border-radius:12px;line-height:1.65;font-size:15px;white-space:normal}.projection-answer br{content:"";display:block;margin:6px 0}@media(max-width:700px){.projection-head{align-items:flex-start;flex-direction:column}}';document.head.appendChild(st)}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{injectTradeTab();injectProjectionTab()});else{injectTradeTab();injectProjectionTab()}
 })();
+
+/* SHOWDD_PLAYER_STYLE_V1 */
+(()=>{
+  const esc2=v=>String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));
+  const initials2=name=>String(name||'Player').split(/\s+/).filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase();
+  const ovrTone2=o=>o>=90?'showdd-elite':o>=85?'showdd-diamond':o>=80?'showdd-gold':o>=75?'showdd-silver':o>=65?'showdd-bronze':'showdd-common';
+  const style=document.createElement('style');
+  style.id='showdd-player-style';
+  style.textContent=`
+    .showdd-player-cell{display:flex;align-items:center;gap:11px;min-width:245px}
+    .showdd-avatar{width:42px;height:42px;border-radius:8px;background:#17283a;border:1px solid #30475d;display:grid;place-items:center;font-size:12px;font-weight:950;color:#dce7f0;flex:none}
+    .showdd-player-info{min-width:0;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .showdd-name{font-weight:900;white-space:nowrap}
+    .showdd-live{font-size:9px;line-height:1;padding:4px 6px;border-radius:4px;background:#26394d;color:#a9bacb;font-weight:900;text-transform:uppercase;letter-spacing:.5px}
+    .showdd-ovr{display:inline-flex;align-items:center;justify-content:center;min-width:34px;height:28px;padding:0 7px;border-radius:6px;font-size:15px;font-weight:950;line-height:1;border:1px solid transparent}
+    .showdd-elite{background:#b71c1c;color:#fff;border-color:#ef5350}.showdd-diamond{background:#8e24aa;color:#fff;border-color:#ce93d8}
+    .showdd-gold{background:#f9a825;color:#111;border-color:#ffe082}.showdd-silver{background:#9aa7b2;color:#101820;border-color:#cfd8dc}
+    .showdd-bronze{background:#8d5a3b;color:#fff;border-color:#b9825d}.showdd-common{background:#263746;color:#d9e3eb;border-color:#3e5365}
+    .showdd-sub{display:block;width:100%;font-size:10px;color:#8297ab;margin-top:-2px}
+    @media(max-width:620px){.showdd-player-cell{min-width:210px}.showdd-avatar{width:38px;height:38px}.showdd-ovr{height:26px;min-width:32px;font-size:14px}}
+  `;
+  document.head.appendChild(style);
+  window.playerRow=(p,w=false)=>{
+    const [st,cl]=statusClass(p),inj=norm(p?.injury_status),url=window.espnPlayerUrl(p?.id,p?.name),name=esc2(p?.name||'Player');
+    const pts=p?.total_points??p?.applied_stat_total??p?.average_points;
+    const o=showOvr(p),od=Number.isFinite(o)?String(o):'—';
+    const initials=esc2(initials2(p?.name));
+    const tone=Number.isFinite(o)?ovrTone2(o):'showdd-common';
+    const sub=inj&&inj!=='ACTIVE'?esc2(inj):'Live Series';
+    return `<tr class="row" title="Open player on ESPN"><td><a href="${esc2(url)}" target="_blank" rel="noopener noreferrer" style="display:block;color:inherit;text-decoration:none" aria-label="Open ${name} on ESPN"><div class="showdd-player-cell"><div class="showdd-avatar">${initials}</div><div class="showdd-player-info"><div class="showdd-name">${name}</div><span class="showdd-live">LIVE</span><span class="showdd-ovr ${tone}" title="MLB The Show Live Series Overall">${od}</span><span class="showdd-sub">${sub}</span></div></div></a></td><td><span class="pos">${esc2(pos(p))}</span></td><td><span class="sub">${esc2(elig(p))}${p.lineup_slot?' · '+esc2(p.lineup_slot):''}</span></td><td><span class="badge ${cl}">${esc2(st)}</span></td>${w?`<td>${p.percent_owned==null?'—':esc2(Number(p.percent_owned).toFixed(1))+'%'}</td>`:''}<td class="pts">${pts==null?'—':esc2(Number(pts).toFixed(1))}</td></tr>`;
+  };
+  window.dispatchEvent(new CustomEvent('showdd-player-style-ready'));
+})();
+
