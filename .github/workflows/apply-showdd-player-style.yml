@@ -20,16 +20,6 @@ jobs:
       - name: Repair malformed Live OVR backend
         run: python backend/normalize_live_ovr.py
 
-      - name: Inspect repaired source boundary
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          s = Path('backend/main.py').read_text(encoding='utf-8')
-          i = s.find('app=FastAPI')
-          print(repr(s[max(0, i-80):i+180]))
-          print('literal_backslash_n_count=', s.count('\\n'))
-          PY
-
       - name: Validate backend syntax
         run: |
           python -m py_compile backend/main.py
