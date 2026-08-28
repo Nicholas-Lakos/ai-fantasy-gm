@@ -26,7 +26,10 @@ if line_end < 0:
     line_end = len(suffix)
 app_line = suffix[:line_end]
 rest = suffix[line_end:]
-if rest.startswith('\n'):
+# The old generated file may also contain a literal backslash-n separator here.
+if rest.startswith('\\n'):
+    rest = rest[2:]
+elif rest.startswith('\n'):
     rest = rest[1:]
 
 new = prefix + app_line + '\n' + block.rstrip('\n') + '\n' + rest.lstrip('\n')
