@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 p = Path('backend/main.py')
 s = p.read_text(encoding='utf-8')
@@ -31,6 +32,8 @@ elif rest.startswith('\n'):
     rest = rest[1:]
 
 new = prefix + app_line + '\n' + block.rstrip('\n') + '\n' + rest.lstrip('\n')
+# The damaged prefix can contain one or more literal backslash-n pairs immediately before app.
+new = re.sub(r'(?:\\+n)+app=FastAPI', '\napp=FastAPI', new, count=1)
 
 if new == s:
     print('main.py already normalized')
