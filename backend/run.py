@@ -4,12 +4,12 @@ import httpx
 from fastapi import Query
 from fastapi.responses import FileResponse, HTMLResponse
 from . import main
-from .show_live import live_ratings
+from .show_live import live_ratings, live_ratings_for_names
 
 POS=main.POS
 SLOT=main.SLOT
 _ORIGINAL_LIVE=main.live
-FRONTEND_VERSION='20260824-recovery-1'
+FRONTEND_VERSION='20260828-live-ovr-1'
 
 @main.app.middleware('http')
 async def inject_current_frontend(request, call_next):
@@ -122,13 +122,17 @@ async def mlb_player_stats_api(name:str=Query(...,min_length=1)):
     except Exception as e:return {'found':False,'name':name,'error':str(e)}
 
 @main.app.get('/api/show/live-ratings')
-async def show_live_ratings(force:bool=False):
-    try:return await live_ratings(force)
-    except Exception as e:return {'source':'theSHOWBASE Live Series','game':'MLB The Show 26','count':0,'players':[],'error':str(e)}
+async def show_live_ratings(force:bool=False,names:list[str]=Query(default=[])):
+    try:
+        if names:
+            return await live_ratings_for_names(names,force)
+        return await live_ratings(force)
+    except Exception as e:
+        return {'source':'theSHOWBASE Live Series','game':'MLB The Show 26','count':0,'league_players':len(names or []),'matched_players':0,'players':[],'error':str(e)}
 
 @main.app.get('/api/show/live-ratings/health')
 async def show_live_ratings_health():
-    data=await show_live_ratings(False);return {'ok':bool(data.get('count')),'count':data.get('count',0),'source':data.get('source'),'error':data.get('error')}
+    return {'ok':True,'source':'theSHOWBASE Live Series','mode':'league-player-only'}
 
 main.compact_player=compact_player_fixed
 main.compact_team=compact_team_fixed
@@ -139,4 +143,4 @@ main.live=live_fixed
 @main.app.get('/fixes.js')
 def fixes_js():return FileResponse(os.path.join(main.ROOT,'frontend','fixes.js'),media_type='application/javascript',headers={'Cache-Control':'no-store'})
 
-if __name__=='__main__':uvicorn.run(main.app,host='0.0.0.0',port=8000)
+if __name__=='__main__':uvicorn.run(main.app,host='0.0.0.0',port=int(os.getenv('PORT','8000')))
