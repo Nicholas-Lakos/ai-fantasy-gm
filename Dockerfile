@@ -4,7 +4,9 @@ COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 COPY . /app
 
-RUN python /app/backend/normalize_live_ovr.py
+# Validate the exact backend that Render will run. Do not mutate source files
+# during the Docker build; normalization was only needed for an older broken
+# revision and was causing current builds to fail.
 RUN python -m py_compile /app/backend/main.py /app/backend/show_server.py /app/backend/show_live.py
 
 RUN python - <<'PY'
@@ -18,9 +20,11 @@ for tag in [
     '<script src="/live_ovr.js?v=20260827"></script>',
     '<script src="/fixes.js?v=20260828"></script>',
     '<script src="/live_ovr.js?v=20260828"></script>',
+    '<script src="/fixes.js?v=20260829"></script>',
+    '<script src="/live_ovr.js?v=20260829"></script>',
 ]:
     s = s.replace(tag, '')
-assets = '<script src="/fixes.js?v=20260829"></script><script src="/live_ovr.js?v=20260829"></script><script>window.norm=window.norm||function(v){return String(v||\'\').toUpperCase()};</script>'
+assets = '<script src="/fixes.js?v=20260830"></script><script src="/live_ovr.js?v=20260830"></script><script>window.norm=window.norm||function(v){return String(v||\'\').toUpperCase()};</script>'
 if assets not in s:
     s = s.replace('</body>', assets + '</body>') if '</body>' in s else s.replace('</html>', assets + '</html>')
 p.write_text(s, encoding='utf-8')
