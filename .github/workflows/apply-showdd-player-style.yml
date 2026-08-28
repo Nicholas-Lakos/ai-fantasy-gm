@@ -1,4 +1,4 @@
-name: Apply ShowDD player style
+name: Validate and deploy-ready ShowDD update
 
 on:
   push:
@@ -9,66 +9,65 @@ permissions:
   contents: write
 
 jobs:
-  style:
+  validate:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Apply ShowDD-style player rows
+
+      - name: Repair malformed Live OVR block
+        shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
-          p = Path('frontend/fixes.js')
+          p = Path('backend/main.py')
           s = p.read_text(encoding='utf-8')
-          marker = '/* SHOWDD_PLAYER_STYLE_V1 */'
-          if marker in s:
-              print('ShowDD player style already installed')
-              raise SystemExit(0)
-          patch = r'''
-          /* SHOWDD_PLAYER_STYLE_V1 */
-          (()=>{
-            const esc2=v=>String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));
-            const initials2=name=>String(name||'Player').split(/\s+/).filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase();
-            const ovrTone2=o=>o>=90?'showdd-elite':o>=85?'showdd-diamond':o>=80?'showdd-gold':o>=75?'showdd-silver':o>=65?'showdd-bronze':'showdd-common';
-            const style=document.createElement('style');
-            style.id='showdd-player-style';
-            style.textContent=`
-              .showdd-player-cell{display:flex;align-items:center;gap:11px;min-width:245px}
-              .showdd-avatar{width:42px;height:42px;border-radius:8px;background:#17283a;border:1px solid #30475d;display:grid;place-items:center;font-size:12px;font-weight:950;color:#dce7f0;flex:none}
-              .showdd-player-info{min-width:0;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-              .showdd-name{font-weight:900;white-space:nowrap}
-              .showdd-live{font-size:9px;line-height:1;padding:4px 6px;border-radius:4px;background:#26394d;color:#a9bacb;font-weight:900;text-transform:uppercase;letter-spacing:.5px}
-              .showdd-ovr{display:inline-flex;align-items:center;justify-content:center;min-width:34px;height:28px;padding:0 7px;border-radius:6px;font-size:15px;font-weight:950;line-height:1;border:1px solid transparent}
-              .showdd-elite{background:#b71c1c;color:#fff;border-color:#ef5350}.showdd-diamond{background:#8e24aa;color:#fff;border-color:#ce93d8}
-              .showdd-gold{background:#f9a825;color:#111;border-color:#ffe082}.showdd-silver{background:#9aa7b2;color:#101820;border-color:#cfd8dc}
-              .showdd-bronze{background:#8d5a3b;color:#fff;border-color:#b9825d}.showdd-common{background:#263746;color:#d9e3eb;border-color:#3e5365}
-              .showdd-sub{display:block;width:100%;font-size:10px;color:#8297ab;margin-top:-2px}
-              @media(max-width:620px){.showdd-player-cell{min-width:210px}.showdd-avatar{width:38px;height:38px}.showdd-ovr{height:26px;min-width:32px;font-size:14px}}
-            `;
-            document.head.appendChild(style);
-            window.playerRow=(p,w=false)=>{
-              const [st,cl]=statusClass(p),inj=norm(p?.injury_status),url=window.espnPlayerUrl(p?.id,p?.name),name=esc2(p?.name||'Player');
-              const pts=p?.total_points??p?.applied_stat_total??p?.average_points;
-              const o=showOvr(p),od=Number.isFinite(o)?String(o):'—';
-              const initials=esc2(initials2(p?.name));
-              const tone=Number.isFinite(o)?ovrTone2(o):'showdd-common';
-              const sub=inj&&inj!=='ACTIVE'?esc2(inj):'Live Series';
-              return `<tr class="row" title="Open player on ESPN"><td><a href="${esc2(url)}" target="_blank" rel="noopener noreferrer" style="display:block;color:inherit;text-decoration:none" aria-label="Open ${name} on ESPN"><div class="showdd-player-cell"><div class="showdd-avatar">${initials}</div><div class="showdd-player-info"><div class="showdd-name">${name}</div><span class="showdd-live">LIVE</span><span class="showdd-ovr ${tone}" title="MLB The Show Live Series Overall">${od}</span><span class="showdd-sub">${sub}</span></div></div></a></td><td><span class="pos">${esc2(pos(p))}</span></td><td><span class="sub">${esc2(elig(p))}${p.lineup_slot?' · '+esc2(p.lineup_slot):''}</span></td><td><span class="badge ${cl}">${esc2(st)}</span></td>${w?`<td>${p.percent_owned==null?'—':esc2(Number(p.percent_owned).toFixed(1))+'%'}</td>`:''}<td class="pts">${pts==null?'—':esc2(Number(pts).toFixed(1))}</td></tr>`;
-            };
-            window.dispatchEvent(new CustomEvent('showdd-player-style-ready'));
-          })();
-          '''
-          p.write_text(s.rstrip()+"\n"+patch+"\n",encoding='utf-8')
+          marker = '# LIVE_SHOW_OVR_SYSTEM_V1'
+          app_marker = 'app=FastAPI('
+          start = s.find(marker)
+          app_pos = s.find(app_marker)
+          if start == -1:
+              print('No Live OVR block found; nothing to repair')
+          elif app_pos == -1:
+              raise SystemExit('FastAPI app initialization is missing')
+          else:
+              end = s.find(app_marker, start)
+              if end == -1:
+                  raise SystemExit('Could not locate FastAPI initialization after Live OVR block')
+              block = s[start:end]
+              # Previous automated patches accidentally wrote the two characters backslash+n.
+              # Convert those only inside the generated Live OVR block, not the rest of main.py.
+              block = block.replace('\\\\n', '\n')
+              # Put the FastAPI initialization before every route decorator in this block.
+              app_line_end = s.find('\n', app_pos)
+              app_line = s[app_pos:app_line_end]
+              prefix = s[:start]
+              suffix = s[app_pos:]
+              # Remove the old block and place it immediately after app initialization.
+              new_suffix = app_line + '\n' + block + suffix[len(app_line):]
+              p.write_text(prefix + new_suffix, encoding='utf-8')
+              print('Normalized Live OVR block and moved it after FastAPI initialization')
           PY
-      - name: Validate JavaScript file exists
-        run: test -s frontend/fixes.js
-      - name: Commit style
+
+      - name: Validate backend syntax
+        run: |
+          python -m py_compile backend/main.py
+          python -m py_compile backend/show_server.py
+          python -m py_compile backend/show_live.py
+
+      - name: Validate frontend syntax
+        run: node --check frontend/fixes.js
+
+      - name: Commit validated repair
         run: |
           git config user.name 'AI Fantasy GM Bot'
           git config user.email 'actions@users.noreply.github.com'
-          git add frontend/fixes.js .github/workflows/apply-showdd-player-style.yml
-          git diff --cached --quiet && exit 0
-          git commit -m 'Make player rows ShowDD-style with Live Series OVR beside names'
+          git add backend/main.py frontend/fixes.js .github/workflows/apply-showdd-player-style.yml
+          if git diff --cached --quiet; then
+            echo 'No changes needed'
+            exit 0
+          fi
+          git commit -m 'Repair Live OVR backend and validate deployment'
           git push origin HEAD:main
