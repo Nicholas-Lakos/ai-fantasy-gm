@@ -99,39 +99,8 @@ async def player_card(req,pid,p):
  return {'id':pid,'name':pl.get('fullName'),'position':POS.get(pl.get('defaultPositionId'),'—'),'eligible_positions':[POS.get(v,'—') for v in pl.get('eligibleSlots',[]) if v in POS],'pro_team_id':pl.get('proTeamId'),'injury_status':pl.get('injuryStatus'),'active':pl.get('active'),'total_points':pe.get('totalPoints'),'current_period_points':current or pe.get('appliedStatTotal'),'percent_owned':pe.get('percentOwned'),'percent_started':pe.get('percentStarted'),'stats':stats,'raw_stat_count':len(stats)}
 
 app=FastAPI(title='AI Fantasy GM',version='11.2');app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_methods=['*'],allow_headers=['*'])
-# LIVE_SHOW_OVR_SYSTEM_V1
-SHOWBASE_PLAYER_URL = 'https://www.theshowbase.com/26/player/{}-live'
-_SHOW_OVR_CACHE = {}
-_SHOW_OVR_TTL = 60 * 60
-
-def _show_slug(name):
-    import unicodedata
-    s = unicodedata.normalize('NFKD', str(name or '')).encode('ascii', 'ignore').decode('ascii').lower()
-    s = re.sub(r'[^a-z0-9]+', '-', s).strip('-')
-    return s
-
-async def _fetch_show_live_ovr(client, name):
-    import time
-    key = re.sub(r'\\s+', ' ', str(name or '').strip()).casefold()
-    now = time.time()
-    cached = _SHOW_OVR_CACHE.get(key)
-    if cached and now - cached['time'] < _SHOW_OVR_TTL:
-        return cached['overall']
-    slug = _show_slug(name)
-    if not slug:
-        return None
-    try:
-        r = await client.get(SHOWBASE_PLAYER_URL.format(slug), timeout=12, follow_redirects=True)
-        if r.status_code != 200:
-            return None
-        m = re.search(r'\\b([5-9]\\d|100)\\s+OVR\\b', r.text, re.I)
-        if not m:
-            return None
-        overall = int(m.group(1))
-        _SHOW_OVR_CACHE[key] = {'overall': overall, 'time': now}
-        return overall
-    except Exception:
-        return None
+# LIVE_SHOW_OVR_SYSTEM_V2
+from show_live import live_ratings_for_names
 
 @app.get('/api/show/live-ratings')
 async def show_live_ratings(authorization: str = Header(None)):
@@ -143,23 +112,17 @@ async def show_live_ratings(authorization: str = Header(None)):
     seen = set()
     for team in data.get('teams', []):
         for entry in (team.get('roster') or {}).get('entries', []):
-            p = entry.get('playerPoolEntry') or {}
-            player = p.get('player') or {}
+            ppe = entry.get('playerPoolEntry') or {}
+            player = ppe.get('player') or {}
             name = player.get('fullName')
             if name:
-                k = re.sub(r'\\s+', ' ', name.strip()).casefold()
-                if k not in seen:
-                    seen.add(k)
+                key = ' '.join(str(name).split()).casefold()
+                if key not in seen:
+                    seen.add(key)
                     names.append(name)
-    import asyncio as _asyncio
-    sem = _asyncio.Semaphore(10)
-    async with httpx.AsyncClient(headers={'User-Agent': 'AI-Fantasy-GM/1.0'}) as client:
-        async def one(name):
-            async with sem:
-                ovr = await _fetch_show_live_ovr(client, name)
-                return {'name': name, 'overall': ovr, 'source': 'theSHOWBASE Live Series'}
-        rows = await _asyncio.gather(*(one(name) for name in names))
-    return {'players': [x for x in rows if x['overall'] is not None], 'league_players': len(names), 'matched_players': sum(x['overall'] is not None for x in rows)}
+    result = await live_ratings_for_names(names)
+    return result
+
 @app.get('/health')
 def health():return {'ok':True,'version':'11.2','ai_provider':'openrouter-free','ai_configured':bool(os.getenv('OPENROUTER_API_KEY'))}
 @app.post('/auth/signup')
