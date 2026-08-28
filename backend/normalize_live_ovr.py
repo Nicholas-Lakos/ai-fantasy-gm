@@ -11,6 +11,10 @@ if start < 0:
 app_pos = s.find(app_marker)
 if app_pos < 0:
     raise SystemExit('FastAPI app initialization not found')
+# A clean file already has app initialization before the generated Live OVR block.
+if app_pos < start:
+    print('main.py already normalized')
+    raise SystemExit(0)
 end = s.find(app_marker, start)
 if end < 0:
     raise SystemExit('FastAPI app initialization after Live OVR block not found')
@@ -35,8 +39,5 @@ new = prefix + app_line + '\n' + block.rstrip('\n') + '\n' + rest.lstrip('\n')
 # The damaged prefix can contain one or more literal backslash-n pairs immediately before app.
 new = re.sub(r'(?:\\+n)+app=FastAPI', '\napp=FastAPI', new, count=1)
 
-if new == s:
-    print('main.py already normalized')
-else:
-    p.write_text(new, encoding='utf-8')
-    print('Repaired backend/main.py')
+p.write_text(new, encoding='utf-8')
+print('Repaired backend/main.py')
