@@ -1,0 +1,52 @@
+name: Fix Live OVR endpoint
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Replace broken Live OVR endpoint
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('backend/main.py')
+          s = p.read_text(encoding='utf-8')
+
+          start = s.find('# LIVE_SHOW_OVR_SYSTEM_V1')
+          health = s.find("@app.get('/health')")
+          if start < 0 or health < 0 or health <= start:
+              raise SystemExit('Live OVR block markers not found')
+
+          block = '''# LIVE_SHOW_OVR_SYSTEM_V2\nfrom show_live import live_ratings_for_names\n\n@app.get('/api/show/live-ratings')\nasync def show_live_ratings(authorization: str = Header(None)):\n    u = uid(authorization)\n    l = league_row(u)\n    req = req_for(l)\n    data = await espn(req, ['mTeam', 'mRoster', 'mStatus'])\n    names = []\n    seen = set()\n    for team in data.get('teams', []):\n        for entry in (team.get('roster') or {}).get('entries', []):\n            ppe = entry.get('playerPoolEntry') or {}\n            player = ppe.get('player') or {}\n            name = player.get('fullName')\n            if name:\n                key = ' '.join(str(name).split()).casefold()\n                if key not in seen:\n                    seen.add(key)\n                    names.append(name)\n    result = await live_ratings_for_names(names)\n    return result\n\n'''
+
+          s = s[:start] + block + s[health:]
+          p.write_text(s, encoding='utf-8')
+          PY
+
+      - name: Validate backend
+        run: |
+          python -m py_compile backend/main.py backend/show_live.py backend/show_server.py
+
+      - name: Commit repair
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add backend/main.py
+          if git diff --cached --quiet; then
+            echo 'No changes needed'
+          else
+            git commit -m 'Use ShowDD Live OVR service from API endpoint'
+            git push
+          fi
