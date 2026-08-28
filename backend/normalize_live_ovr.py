@@ -15,10 +15,9 @@ if end < 0:
     raise SystemExit('FastAPI app initialization after Live OVR block not found')
 
 block = s[start:end]
-# The previous generator wrote literal backslash-n sequences into this generated block.
-block = block.replace('\\n', '\n')
+# Previous patches have existed with either one or two literal backslashes before n.
+block = block.replace('\\\\n', '\n').replace('\\n', '\n')
 
-# Remove the generated block from its old position and put it immediately after app initialization.
 prefix = s[:start]
 suffix = s[app_pos:]
 line_end = suffix.find('\n')
@@ -26,7 +25,6 @@ if line_end < 0:
     line_end = len(suffix)
 app_line = suffix[:line_end]
 rest = suffix[line_end:]
-# The old generated file may also contain a literal backslash-n separator here.
 if rest.startswith('\\n'):
     rest = rest[2:]
 elif rest.startswith('\n'):
