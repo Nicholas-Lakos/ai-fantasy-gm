@@ -21,7 +21,7 @@ for tag in [
     '<script src="/live_ovr.js?v=20260827"></script>',
 ]:
     s = s.replace(tag, '')
-assets = '<script src="/fixes.js?v=20260828"></script><script src="/live_ovr.js?v=20260828"></script>'
+assets = '<script src="/fixes.js?v=20260828"></script><script src="/live_ovr.js?v=20260828"></script><script>window.norm=window.norm||function(v){return String(v||\'\').toUpperCase()};</script>'
 if assets not in s:
     s = s.replace('</body>', assets + '</body>') if '</body>' in s else s.replace('</html>', assets + '</html>')
 p.write_text(s, encoding='utf-8')
