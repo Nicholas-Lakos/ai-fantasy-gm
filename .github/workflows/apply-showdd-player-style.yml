@@ -37,15 +37,13 @@ jobs:
               if end == -1:
                   raise SystemExit('Could not locate FastAPI initialization after Live OVR block')
               block = s[start:end]
-              # Previous automated patches accidentally wrote the two characters backslash+n.
-              # Convert those only inside the generated Live OVR block, not the rest of main.py.
-              block = block.replace('\\\\n', '\n')
-              # Put the FastAPI initialization before every route decorator in this block.
+              # The broken patch contains the literal two-character sequence backslash+n.
+              # Replace that exact sequence only inside the generated Live OVR block.
+              block = block.replace('\\n', '\n')
               app_line_end = s.find('\n', app_pos)
               app_line = s[app_pos:app_line_end]
               prefix = s[:start]
               suffix = s[app_pos:]
-              # Remove the old block and place it immediately after app initialization.
               new_suffix = app_line + '\n' + block + suffix[len(app_line):]
               p.write_text(prefix + new_suffix, encoding='utf-8')
               print('Normalized Live OVR block and moved it after FastAPI initialization')
