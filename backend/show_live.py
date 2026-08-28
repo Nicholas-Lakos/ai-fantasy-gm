@@ -15,8 +15,16 @@ def slug(name):
     return re.sub(r'[^a-z0-9]+','-',s).strip('-')
 
 def parse_ovr(text):
-    m=re.search(r'\b([5-9]\d|100)\s+OVR\b',text,re.I)
-    return int(m.group(1)) if m else None
+    # theSHOWBASE exposes the Live card OVR in several equivalent forms.
+    patterns=[
+        r'\b([5-9]\d|100)\s+OVR\b',
+        r'>\s*([5-9]\d|100)\s+OVR\s*<',
+        r'"(?:overall|ovr)"\s*:\s*"?([5-9]\d|100)',
+    ]
+    for pattern in patterns:
+        m=re.search(pattern,text,re.I)
+        if m:return int(m.group(1))
+    return None
 
 async def _fetch_one(client,name,sem,force=False):
     key=norm(name); now=time.time()
@@ -26,11 +34,19 @@ async def _fetch_one(client,name,sem,force=False):
     if not key:return None
     async with sem:
         try:
-            r=await client.get(BASE_URL.format(slug(name)),headers={'User-Agent':'AI-Fantasy-GM/1.0','Accept':'text/html'},timeout=15)
-            if r.status_code != 200:return None
+            url=BASE_URL.format(slug(name))
+            headers={
+                'User-Agent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/147.0 Safari/537.36',
+                'Accept':'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language':'en-US,en;q=0.9',
+                'Referer':'https://www.theshowbase.com/players',
+            }
+            r=await client.get(url,headers=headers,timeout=20)
+            if r.status_code != 200:
+                return None
             ovr=parse_ovr(r.text)
             if ovr is None:return None
-            row={'name':name,'overall':ovr,'source':'theSHOWBASE Live Series'}
+            row={'name':name,'overall':ovr,'source':'theSHOWBASE Live Series','url':url}
             _cache[key]={'at':now,'row':row}
             return row
         except Exception:
@@ -42,7 +58,7 @@ async def live_ratings_for_names(names,force=False):
         k=norm(name)
         if k and k not in seen:
             seen.add(k);unique.append(name)
-    sem=asyncio.Semaphore(10)
+    sem=asyncio.Semaphore(5)
     async with httpx.AsyncClient(follow_redirects=True) as client:
         rows=await asyncio.gather(*[_fetch_one(client,n,sem,force) for n in unique])
     rows=[r for r in rows if r]
