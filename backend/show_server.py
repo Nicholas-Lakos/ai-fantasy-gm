@@ -10,8 +10,7 @@ async def show_live_ratings(
     names: list[str] = Query(default=[]),
 ):
     # Prefer explicitly requested league-player names from the browser. This lets
-    # the frontend ask for only the players currently displayed, without requiring
-    # a second authentication lookup.
+    # the frontend ask for only the players currently displayed.
     requested=[]
     seen=set()
     for name in names or []:
@@ -21,7 +20,7 @@ async def show_live_ratings(
             seen.add(key); requested.append(clean)
 
     if requested:
-        return await live_ratings_for_names(requested,force)
+        return await live_ratings_for_names(requested, force)
 
     # Backward-compatible authenticated fallback.
     u=main.uid(authorization)
@@ -38,12 +37,22 @@ async def show_live_ratings(
             if name:
                 key=main.re.sub(r'\s+',' ',name.strip()).casefold()
                 if key not in seen:
-                    seen.add(key);roster_names.append(name)
-    return await live_ratings_for_names(roster_names,force)
+                    seen.add(key); roster_names.append(name)
+    return await live_ratings_for_names(roster_names, force)
+
+# main.py still contains the legacy route for compatibility. FastAPI matches
+# routes in registration order, so put this ShowDD-backed route before that
+# legacy handler. This is the critical fix that makes the new lookup actually run.
+routes=main.app.router.routes
+new_route=next((r for r in routes if getattr(r,'endpoint',None) is show_live_ratings),None)
+legacy_index=next((i for i,r in enumerate(routes) if getattr(r,'path',None)=='/api/show/live-ratings' and getattr(r,'endpoint',None) is not show_live_ratings),None)
+if new_route is not None and legacy_index is not None:
+    routes.remove(new_route)
+    routes.insert(legacy_index, new_route)
 
 @main.app.get('/api/show/live-ratings/health')
 async def show_live_ratings_health():
-    return {'ok':True,'source':'theSHOWBASE Live Series','mode':'league-player-only'}
+    return {'ok':True,'source':'showdd.io Live Series','mode':'league-player-only'}
 
 if __name__=='__main__':
     import uvicorn, os
