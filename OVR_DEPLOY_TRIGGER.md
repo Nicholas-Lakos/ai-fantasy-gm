@@ -1,0 +1,1 @@
+Live OVR endpoint repair trigger. The backend repair workflow replaces the old lookup with the ShowDD-based service and validates Python before committing.
