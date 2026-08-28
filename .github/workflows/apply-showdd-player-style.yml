@@ -17,37 +17,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Repair malformed Live OVR block
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('backend/main.py')
-          s = p.read_text(encoding='utf-8')
-          marker = '# LIVE_SHOW_OVR_SYSTEM_V1'
-          app_marker = 'app=FastAPI('
-          start = s.find(marker)
-          app_pos = s.find(app_marker)
-          if start == -1:
-              print('No Live OVR block found; nothing to repair')
-          elif app_pos == -1:
-              raise SystemExit('FastAPI app initialization is missing')
-          else:
-              end = s.find(app_marker, start)
-              if end == -1:
-                  raise SystemExit('Could not locate FastAPI initialization after Live OVR block')
-              block = s[start:end]
-              # The broken patch contains the literal two-character sequence backslash+n.
-              # Replace that exact sequence only inside the generated Live OVR block.
-              block = block.replace('\\n', '\n')
-              app_line_end = s.find('\n', app_pos)
-              app_line = s[app_pos:app_line_end]
-              prefix = s[:start]
-              suffix = s[app_pos:]
-              new_suffix = app_line + '\n' + block + suffix[len(app_line):]
-              p.write_text(prefix + new_suffix, encoding='utf-8')
-              print('Normalized Live OVR block and moved it after FastAPI initialization')
-          PY
+      - name: Repair malformed Live OVR backend
+        run: python backend/normalize_live_ovr.py
 
       - name: Validate backend syntax
         run: |
@@ -62,7 +33,7 @@ jobs:
         run: |
           git config user.name 'AI Fantasy GM Bot'
           git config user.email 'actions@users.noreply.github.com'
-          git add backend/main.py frontend/fixes.js .github/workflows/apply-showdd-player-style.yml
+          git add backend/main.py frontend/fixes.js .github/workflows/apply-showdd-player-style.yml backend/normalize_live_ovr.py
           if git diff --cached --quiet; then
             echo 'No changes needed'
             exit 0
