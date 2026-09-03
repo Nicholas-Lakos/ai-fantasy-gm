@@ -1,0 +1,33 @@
+name: Enable Fantasy OVR frontend
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure Fantasy OVR script is injected
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('backend/run.py')
+          s=p.read_text()
+          old="tag=f'<script src=\"/fixes.js?v={FRONTEND_VERSION}\"></script>'"
+          new="tag=f'<script src=\"/fixes.js?v={FRONTEND_VERSION}\"></script><script src=\"/fantasy_ovr.js?v=20260903\"></script>'"
+          if old not in s:
+              raise SystemExit('Expected frontend injection line was not found')
+          s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add backend/run.py
+          git diff --cached --quiet || git commit -m 'Load ESPN Fantasy OVR renderer in frontend'
+          git push
