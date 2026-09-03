@@ -1,91 +1,87 @@
 (()=>{
   const norm=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9 ]/gi,'').replace(/\s+/g,' ').trim().toLowerCase();
   const cls=o=>o>=90?'ovr-elite':o>=80?'ovr-great':o>=70?'ovr-good':o>=60?'ovr-average':o>=50?'ovr-below':'ovr-poor';
-  let ratings=new Map(),busy=false;
+  let ratings=new Map(),loading=false;
 
-  async function load(){
-    const token=localStorage.getItem('gm_token')||'';
-    if(!token||busy)return;
-    busy=true;
-    try{
-      const r=await fetch('/api/fantasy-ovr?ts='+Date.now(),{cache:'no-store',headers:{Authorization:'Bearer '+token}});
-      if(!r.ok)throw new Error('Fantasy OVR request failed: '+r.status);
-      const j=await r.json();
-      ratings=new Map((j.players||[]).filter(p=>p.name&&Number.isFinite(Number(p.fantasy_ovr))).map(p=>[norm(p.name),p]));
-      window.FANTASY_OVR_READY=ratings.size>0;
-      window.FANTASY_OVR_SOURCE=j.source||'ESPN Fantasy Baseball stats';
-      paint();
-    }catch(e){
-      console.warn('ESPN Fantasy OVR unavailable',e);
-      window.FANTASY_OVR_READY=false;
-      paint();
-    }finally{busy=false}
+  function authToken(){
+    return localStorage.getItem('gm_token') || localStorage.getItem('token') || localStorage.getItem('auth_token') || '';
+  }
+
+  function rowName(row){
+    const el=row.querySelector('.pn,.showdd-name');
+    return el ? String(el.textContent||'').trim() : '';
   }
 
   function paint(){
-    document.querySelectorAll('tr.row').forEach(row=>{
-      const nameEl=row.querySelector('.pn,.showdd-name');
-      if(!nameEl)return;
-
-      // Remove the old MLB The Show presentation everywhere.
-      const live=row.querySelector('.showdd-live');
+    document.querySelectorAll('#roster tr.row,#opRoster tr.row,#waiverRows tr.row').forEach(row=>{
+      const name=rowName(row); if(!name)return;
+      const data=ratings.get(norm(name)); if(!data)return;
+      const o=Math.round(Number(data.fantasy_ovr)); if(!Number.isFinite(o))return;
+      const avatar=row.querySelector('.avatar');
+      if(avatar){
+        avatar.textContent=String(o);
+        avatar.className='avatar '+cls(o);
+        avatar.title='AI Fantasy GM OVR · calculated from ESPN fantasy stats';
+        avatar.dataset.fantasyOvr=String(o);
+        avatar.removeAttribute('data-show-ovr');
+      }
+      const live=row.querySelector('.showdd-live,.live-label,.live-ovr-badge');
       if(live)live.remove();
-      const legacySub=row.querySelector('.showdd-sub');
-      if(legacySub && legacySub.textContent.trim().toLowerCase()==='live series'){
-        legacySub.textContent='ESPN fantasy stats';
-      }
-
-      const data=ratings.get(norm(nameEl.textContent));
-      if(!data)return;
-      const o=Math.round(Number(data.fantasy_ovr));
-      if(!Number.isFinite(o))return;
-
-      const oldAvatar=row.querySelector('.avatar');
-      if(oldAvatar){
-        oldAvatar.textContent=String(o);
-        oldAvatar.className='avatar '+cls(o);
-        oldAvatar.title='AI Fantasy GM OVR · calculated from ESPN fantasy stats';
-        oldAvatar.dataset.fantasyOvr=String(o);
-      }
-
-      const showAvatar=row.querySelector('.showdd-avatar');
-      if(showAvatar)showAvatar.dataset.fantasyOvr=String(o);
-
-      const badge=row.querySelector('.showdd-ovr');
-      if(badge){
-        badge.textContent=String(o);
-        badge.className='showdd-ovr '+cls(o);
-        badge.title='AI Fantasy GM OVR · calculated from ESPN fantasy stats';
-        badge.dataset.fantasyOvr=String(o);
-      }
-
-      const sub=nameEl.parentElement?.querySelector('.sub,.showdd-sub');
+      const oldSub=row.querySelector('.showdd-sub');
+      if(oldSub && /live series/i.test(oldSub.textContent||''))oldSub.textContent='ESPN fantasy stats';
+      const pn=row.querySelector('.pn');
+      const sub=pn?.parentElement?.querySelector('.sub,.showdd-sub');
       if(sub){
         sub.textContent='Fantasy OVR '+o+' · ESPN stats';
-        sub.title=`Season ${data.total_points??'—'} pts · Avg ${data.average_fantasy_points??'—'} pts/day · Recent ${data.recent_average??'—'} pts/day`;
+        sub.title='Season '+(data.total_points??'—')+' pts · Avg '+(data.average_fantasy_points??'—')+' pts/day · Recent '+(data.recent_average??'—')+' pts/day';
       }
     });
   }
 
-  function addLabel(){
-    if(document.getElementById('fantasy-ovr-note'))return;
-    const team=document.getElementById('team');
-    if(!team)return;
-    const card=team.querySelector('.card.full');
-    if(!card)return;
-    const note=document.createElement('div');
-    note.id='fantasy-ovr-note';
-    note.className='notice';
-    note.style.marginTop='10px';
-    note.textContent='Fantasy OVR is calculated from ESPN fantasy statistics and updates as player performance changes.';
-    card.insertBefore(note,card.firstChild);
+  async function load(){
+    const token=authToken();
+    if(!token||loading)return false;
+    loading=true;
+    try{
+      const r=await fetch('/api/fantasy-ovr?ts='+Date.now(),{cache:'no-store',credentials:'include',headers:{Authorization:'Bearer '+token}});
+      if(!r.ok)throw new Error('Fantasy OVR HTTP '+r.status);
+      const j=await r.json();
+      const list=Array.isArray(j.players)?j.players:[];
+      const next=new Map();
+      list.forEach(p=>{
+        const o=Number(p.fantasy_ovr);
+        if(p?.name&&Number.isFinite(o))next.set(norm(p.name),p);
+      });
+      ratings=next;
+      window.FANTASY_OVR_READY=ratings.size>0;
+      window.FANTASY_OVR_SOURCE='ESPN Fantasy Baseball stats';
+      window.FANTASY_OVR_COUNT=ratings.size;
+      window.FANTASY_OVR_ERROR='';
+      paint();
+      return ratings.size>0;
+    }catch(e){
+      window.FANTASY_OVR_READY=false;
+      window.FANTASY_OVR_ERROR=String(e.message||e);
+      console.warn('Fantasy OVR unavailable:',e);
+      return false;
+    }finally{loading=false}
   }
 
-  const observer=new MutationObserver(()=>{paint();addLabel()});
-  observer.observe(document.body,{subtree:true,childList:true});
+  function removeLegacy(){
+    document.querySelectorAll('.live-ovr-badge,.live-label,.showdd-live').forEach(e=>e.remove());
+    document.querySelectorAll('.showdd-sub').forEach(e=>{if(/live series/i.test(e.textContent||''))e.textContent='ESPN fantasy stats'});
+  }
+
+  function start(){
+    removeLegacy();
+    const observer=new MutationObserver(()=>{removeLegacy();paint()});
+    observer.observe(document.body,{subtree:true,childList:true});
+    load();
+    [1000,2500,5000,10000].forEach(ms=>setTimeout(load,ms));
+    setInterval(()=>{if(authToken())load()},120000);
+    setInterval(()=>{removeLegacy();paint()},500);
+  }
+
   window.refreshFantasyOVR=load;
-  setTimeout(()=>{load();addLabel()},500);
-  setInterval(()=>{if(localStorage.getItem('gm_token')&&!window.FANTASY_OVR_READY)load()},3000);
-  setInterval(load,120000);
-  setInterval(()=>{if(ratings.size)paint()},1000);
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});else start();
 })();
