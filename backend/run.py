@@ -17,7 +17,7 @@ async def inject_current_frontend(request, call_next):
         path=os.path.join(main.ROOT,'frontend','index.html')
         try:
             html=open(path,'r',encoding='utf-8').read()
-            tag=f'<script src="/fixes.js?v={FRONTEND_VERSION}"></script>'
+            tag=f'<script src="/fixes.js?v={FRONTEND_VERSION}"></script><script src="/fantasy_ovr.js?v=20260903"></script>'
             if '/fixes.js?' not in html: html=html.replace('</body>',tag+'</body>')
             return HTMLResponse(html,headers={'Cache-Control':'no-store'})
         except Exception: pass
