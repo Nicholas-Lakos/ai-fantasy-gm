@@ -18,6 +18,7 @@
     }catch(e){
       console.warn('ESPN Fantasy OVR unavailable',e);
       window.FANTASY_OVR_READY=false;
+      paint();
     }finally{busy=false}
   }
 
@@ -25,6 +26,15 @@
     document.querySelectorAll('tr.row').forEach(row=>{
       const nameEl=row.querySelector('.pn,.showdd-name');
       if(!nameEl)return;
+
+      // Remove the old MLB The Show presentation everywhere.
+      const live=row.querySelector('.showdd-live');
+      if(live)live.remove();
+      const legacySub=row.querySelector('.showdd-sub');
+      if(legacySub && legacySub.textContent.trim().toLowerCase()==='live series'){
+        legacySub.textContent='ESPN fantasy stats';
+      }
+
       const data=ratings.get(norm(nameEl.textContent));
       if(!data)return;
       const o=Math.round(Number(data.fantasy_ovr));
@@ -39,10 +49,7 @@
       }
 
       const showAvatar=row.querySelector('.showdd-avatar');
-      if(showAvatar){
-        showAvatar.classList.add('fantasy-ovr-player');
-        showAvatar.dataset.fantasyOvr=String(o);
-      }
+      if(showAvatar)showAvatar.dataset.fantasyOvr=String(o);
 
       const badge=row.querySelector('.showdd-ovr');
       if(badge){
@@ -51,9 +58,6 @@
         badge.title='AI Fantasy GM OVR · calculated from ESPN fantasy stats';
         badge.dataset.fantasyOvr=String(o);
       }
-
-      const live=row.querySelector('.showdd-live');
-      if(live)live.remove();
 
       const sub=nameEl.parentElement?.querySelector('.sub,.showdd-sub');
       if(sub){
