@@ -13,21 +13,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Ensure Fantasy OVR script is injected
+      - name: Ensure Fantasy OVR is loaded by fixes.js
         run: |
           python - <<'PY'
           from pathlib import Path
-          p=Path('backend/run.py')
-          s=p.read_text()
-          old="tag=f'<script src=\"/fixes.js?v={FRONTEND_VERSION}\"></script>'"
-          new="tag=f'<script src=\"/fixes.js?v={FRONTEND_VERSION}\"></script><script src=\"/fantasy_ovr.js?v=20260903\"></script>'"
-          if old not in s:
-              raise SystemExit('Expected frontend injection line was not found')
-          s=s.replace(old,new,1)
-          p.write_text(s)
+          p=Path('frontend/fixes.js')
+          s=p.read_text(encoding='utf-8')
+          marker='FANTASY_OVR_LOADER_V2'
+          if marker not in s:
+              s += "\n/* FANTASY_OVR_LOADER_V2 */\n(()=>{const load=()=>{if(document.querySelector('script[data-fantasy-ovr]'))return;const s=document.createElement('script');s.src='/fantasy_ovr.js?v=20260903';s.async=false;s.dataset.fantasyOvr='1';document.head.appendChild(s)};if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',load,{once:true});else load()})();\n"
+              p.write_text(s,encoding='utf-8')
           PY
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add backend/run.py
-          git diff --cached --quiet || git commit -m 'Load ESPN Fantasy OVR renderer in frontend'
+          git add frontend/fixes.js
+          git diff --cached --quiet || git commit -m 'Load Fantasy OVR from existing frontend script'
           git push
