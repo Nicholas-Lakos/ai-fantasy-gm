@@ -139,13 +139,31 @@ def build_ovr_rows(players):
 
 
 async def fetch_fantasy_ovr(req, espn, player_card):
-    """Fetch live ESPN cards for every rostered league player and calculate OVRs."""
-    roster_data = await espn(req, ['mTeam', 'mRoster', 'mStatus'])
+    """Fetch rostered players and calculate a position-adjusted OVR from ESPN stats."""
+    meta = await espn(req, ['mSettings', 'mStatus'])
+    current_period = None
+    for obj in (meta.get('status') or {}, meta.get('settings') or {}):
+        for key in ('scoringPeriodId', 'currentScoringPeriodId', 'currentScoringPeriod'):
+            value = obj.get(key)
+            if isinstance(value, dict):
+                value = value.get('id')
+            if value is not None:
+                try:
+                    current_period = int(value)
+                    break
+                except (TypeError, ValueError):
+                    pass
+        if current_period is not None:
+            break
+    if current_period is None:
+        current_period = 1
+
+    roster_data = await espn(req, ['mTeam', 'mRoster', 'mStatus'], current_period)
     entries, seen = [], set()
     for team in roster_data.get('teams', []):
         for entry in (team.get('roster') or {}).get('entries', []):
             ppe = entry.get('playerPoolEntry') or {}
-            p = ppe.get('player') or {}
+            p = ppe.get('player') or entry.get('player') or {}
             pid = p.get('id') or entry.get('playerId') or ppe.get('id')
             if pid is None or str(pid) in seen:
                 continue
@@ -154,12 +172,12 @@ async def fetch_fantasy_ovr(req, espn, player_card):
                 'id': pid,
                 'name': p.get('fullName') or f'Player {pid}',
                 'position': p.get('defaultPositionId'),
-                'total_points': ppe.get('totalPoints'),
+                'total_points': ppe.get('totalPoints', entry.get('totalPoints')),
             })
 
     async def one(e):
         try:
-            card = await player_card(req, e['id'], 1)
+            card = await player_card(req, e['id'], current_period)
             card['position'] = card.get('position') or e.get('position')
             if card.get('total_points') is None:
                 card['total_points'] = e.get('total_points')
