@@ -24,10 +24,10 @@ for tag in [
     '<script src="/live_ovr.js?v=20260830"></script>',
     '<script src="/live_ovr.js?v=20260831"></script>',
     '<script src="/live_ovr.js?v=20260901"></script>',
-    '<script src="/fantasy_ovr.js?v=20260903"></script>',
+    '<script src="/fantasy_ovr.js?v=20260904"></script>',
 ]:
     s = s.replace(tag, '')
-assets = '''<script>window.norm=window.norm||function(v){return String(v??'').toUpperCase()};</script><script src="/fixes.js?v=20260903"></script><script src="/fantasy_ovr.js?v=20260903"></script>'''
+assets = '''<script>window.norm=window.norm||function(v){return String(v??'').toUpperCase()};</script><script src="/fixes.js?v=20260903"></script><script src="/fantasy_ovr.js?v=20260904"></script>'''
 if assets not in s:
     s = s.replace('</body>', assets + '</body>') if '</body>' in s else s.replace('</html>', assets + '</html>')
 p.write_text(s, encoding='utf-8')
