@@ -1,71 +1,33 @@
-"""Dynamic Fantasy OVR engine built from live ESPN fantasy statistics."""
+"""Reliable ESPN-stat Fantasy OVR engine.
+
+This intentionally uses the ESPN roster/player-pool statistics that are already
+available in the authenticated league response.  A deep kona_playercard request
+is optional enrichment, not a requirement for producing an OVR.
+"""
 from __future__ import annotations
 
-import asyncio
 import math
-from statistics import mean, pstdev
 
 
-def _num(value, default=0.0):
+def _num(v, default=0.0):
     try:
-        x = float(value)
+        x = float(v)
         return x if math.isfinite(x) else default
     except (TypeError, ValueError):
         return default
 
 
-def _stats_list(player):
-    """Normalize the two ESPN shapes used by our player-card implementations."""
-    stats = player.get('season_splits') or player.get('stats') or []
-    if isinstance(stats, dict):
-        return []
-    return [s for s in stats if isinstance(s, dict)]
-
-
-def _percentile(value, values):
-    vals = sorted(_num(v) for v in values if v is not None)
-    if not vals:
-        return 0.5
-    if len(vals) == 1:
-        return 0.5
-    below = sum(1 for v in vals if v < value)
-    equal = sum(1 for v in vals if v == value)
+def _pct(value, values):
+    vals = sorted(_num(x) for x in values)
+    if len(vals) <= 1:
+        return 0.50
+    below = sum(x < value for x in vals)
+    equal = sum(x == value for x in vals)
     return (below + 0.5 * equal) / len(vals)
 
 
-def _recent_average(stats, periods=14):
-    rows = []
-    for s in stats or []:
-        pid = s.get('scoringPeriodId')
-        if pid is None:
-            continue
-        if s.get('seasonId') is not None and s.get('statTypeId') not in (None, 0, '0'):
-            continue
-        rows.append((int(pid), _num(s.get('appliedTotal'))))
-    rows.sort(key=lambda x: x[0])
-    recent = [v for _, v in rows[-periods:]]
-    return mean(recent) if recent else 0.0
-
-
-def _consistency(stats):
-    vals = []
-    for s in stats or []:
-        if s.get('scoringPeriodId') is None:
-            continue
-        if s.get('seasonId') is not None and s.get('statTypeId') not in (None, 0, '0'):
-            continue
-        vals.append(_num(s.get('appliedTotal')))
-    if len(vals) < 2:
-        return 0.5
-    avg = mean(vals)
-    sd = pstdev(vals)
-    if avg <= 0:
-        return 0.5
-    return 1.0 / (1.0 + sd / avg)
-
-
 def build_ovr_rows(players):
-    """Return player ratings and the component scores used to explain them."""
+    """Create a stable 55-99 Fantasy OVR from ESPN fantasy production."""
     if not players:
         return []
 
@@ -73,73 +35,66 @@ def build_ovr_rows(players):
     for p in players:
         groups.setdefault(str(p.get('position') or '—'), []).append(p)
 
-    raw = []
+    # Keep the scoring inputs intentionally simple and explainable:
+    # season production, per-active-day production, recent/current production,
+    # and ESPN ownership/start rate as a small confidence signal.
+    prepared = []
     for p in players:
-        stats = _stats_list(p)
         total = _num(p.get('total_points'))
-        daily = [_num(s.get('appliedTotal')) for s in stats if s.get('scoringPeriodId') is not None]
-        active_days = sum(1 for x in daily if x > 0)
-        season_days = len(daily)
-        avg_day = total / max(1, active_days)
-        recent = _recent_average(stats)
-        consistency = _consistency(stats)
-        group = groups.get(str(p.get('position') or '—'), [p])
+        applied = _num(p.get('applied_stat_total') if p.get('applied_stat_total') is not None else p.get('current_period_points'))
+        avg = _num(p.get('average_fantasy_points'))
+        if avg <= 0:
+            avg = total / max(1.0, _num(p.get('games_or_active_days'), 1.0))
+        recent = _num(p.get('recent_average'))
+        if recent <= 0:
+            recent = applied
+        prepared.append({**p, '_total': total, '_avg': avg, '_recent': recent, '_applied': applied})
+
+    # Percentiles are position-adjusted, so a pitcher is compared primarily
+    # with pitchers and hitters with hitters.
+    for p in prepared:
+        group = groups.get(str(p.get('position') or '—'), prepared)
         totals = [_num(x.get('total_points')) for x in group]
-        avgs, recents = [], []
+        avgs = []
+        recents = []
         for x in group:
-            xs = _stats_list(x)
-            xv = [_num(s.get('appliedTotal')) for s in xs if s.get('scoringPeriodId') is not None]
-            xa = _num(x.get('total_points')) / max(1, sum(1 for z in xv if z > 0))
-            avgs.append(xa)
-            recents.append(_recent_average(xs))
-        raw.append({
-            'player': p,
-            'season_pct': _percentile(total, totals),
-            'avg_pct': _percentile(avg_day, avgs),
-            'recent_pct': _percentile(recent, recents),
-            'consistency': consistency,
-            'active_days': active_days,
-            'season_days': season_days,
-            'avg_day': avg_day,
-            'recent_avg': recent,
-        })
+            xx = next((q for q in prepared if q.get('id') == x.get('id')), None)
+            avgs.append(_num(xx.get('_avg') if xx else x.get('average_fantasy_points')))
+            recents.append(_num(xx.get('_recent') if xx else x.get('recent_average')))
+        season_pct = _pct(p['_total'], totals)
+        avg_pct = _pct(p['_avg'], avgs)
+        recent_pct = _pct(p['_recent'], recents)
+        started = _num(p.get('percent_started'))
+        owned = _num(p.get('percent_owned'))
+        market_pct = max(0.0, min(1.0, (0.65 * owned + 0.35 * started) / 100.0)) if (owned or started) else 0.50
 
-    output = []
-    for r in raw:
-        season = r['season_pct']
-        avg = r['avg_pct']
-        recent = r['recent_pct']
-        consistency = r['consistency']
-        group_size = len(groups.get(str(r['player'].get('position') or '—'), []))
-        if group_size <= 2:
-            performance = 0.55 * season + 0.25 * avg + 0.20 * recent
-        else:
-            performance = 0.40 * season + 0.25 * avg + 0.25 * recent + 0.10 * consistency
-        ovr = round(max(55, min(99, 55 + 44 * performance)))
-        p = r['player']
-        output.append({
-            'id': p.get('id'),
-            'name': p.get('name'),
-            'position': p.get('position'),
-            'fantasy_ovr': ovr,
-            'ovr_source': 'ESPN stats',
-            'ovr_components': {
-                'season': round(season * 100),
-                'average': round(avg * 100),
-                'recent': round(recent * 100),
-                'consistency': round(consistency * 100),
-            },
-            'games_or_active_days': r['active_days'],
-            'stat_days': r['season_days'],
-            'average_fantasy_points': round(r['avg_day'], 2),
-            'recent_average': round(r['recent_avg'], 2),
-            'total_points': round(_num(p.get('total_points')), 2),
-        })
-    return output
+        # Production dominates; ESPN market data is only a modest stabilizer.
+        performance = 0.45 * season_pct + 0.30 * avg_pct + 0.20 * recent_pct + 0.05 * market_pct
+        p['_ovr'] = round(max(55, min(99, 55 + 44 * performance)))
+        p['_components'] = (round(season_pct * 100), round(avg_pct * 100), round(recent_pct * 100), round(market_pct * 100))
+
+    return [{
+        'id': p.get('id'),
+        'name': p.get('name'),
+        'position': p.get('position'),
+        'fantasy_ovr': p['_ovr'],
+        'ovr_source': 'ESPN stats',
+        'ovr_components': {
+            'season': p['_components'][0],
+            'average': p['_components'][1],
+            'recent': p['_components'][2],
+            'market': p['_components'][3],
+        },
+        'games_or_active_days': p.get('games_or_active_days', 0),
+        'stat_days': p.get('stat_days', 0),
+        'average_fantasy_points': round(_num(p.get('_avg')), 2),
+        'recent_average': round(_num(p.get('_recent')), 2),
+        'total_points': round(_num(p.get('_total')), 2),
+    } for p in prepared]
 
 
-async def fetch_fantasy_ovr(req, espn, player_card):
-    """Fetch rostered players and calculate a position-adjusted OVR from ESPN stats."""
+async def fetch_fantasy_ovr(req, espn, player_card=None):
+    """Fetch the authenticated ESPN league roster and always return ratings."""
     meta = await espn(req, ['mSettings', 'mStatus'])
     current_period = None
     for obj in (meta.get('status') or {}, meta.get('settings') or {}):
@@ -147,20 +102,21 @@ async def fetch_fantasy_ovr(req, espn, player_card):
             value = obj.get(key)
             if isinstance(value, dict):
                 value = value.get('id')
-            if value is not None:
-                try:
+            try:
+                if value is not None:
                     current_period = int(value)
                     break
-                except (TypeError, ValueError):
-                    pass
+            except (TypeError, ValueError):
+                pass
         if current_period is not None:
             break
     if current_period is None:
         current_period = 1
 
-    roster_data = await espn(req, ['mTeam', 'mRoster', 'mStatus'], current_period)
-    entries, seen = [], set()
-    for team in roster_data.get('teams', []):
+    data = await espn(req, ['mTeam', 'mRoster', 'mStatus'], current_period)
+    players = []
+    seen = set()
+    for team in data.get('teams', []):
         for entry in (team.get('roster') or {}).get('entries', []):
             ppe = entry.get('playerPoolEntry') or {}
             p = ppe.get('player') or entry.get('player') or {}
@@ -168,27 +124,32 @@ async def fetch_fantasy_ovr(req, espn, player_card):
             if pid is None or str(pid) in seen:
                 continue
             seen.add(str(pid))
-            entries.append({
+            stats = ppe.get('stats') or []
+            season_stats = [s for s in stats if s.get('seasonId') == req.season and s.get('statTypeId') == 0]
+            recent_values = [
+                _num(s.get('appliedTotal')) for s in season_stats
+                if s.get('scoringPeriodId') is not None
+            ]
+            recent = recent_values[-14:] if recent_values else []
+            total = ppe.get('totalPoints')
+            active_days = sum(1 for x in recent_values if x > 0)
+            players.append({
                 'id': pid,
                 'name': p.get('fullName') or f'Player {pid}',
                 'position': p.get('defaultPositionId'),
-                'total_points': ppe.get('totalPoints', entry.get('totalPoints')),
+                'total_points': total,
+                'applied_stat_total': ppe.get('appliedStatTotal'),
+                'percent_owned': ppe.get('percentOwned'),
+                'percent_started': ppe.get('percentStarted'),
+                'games_or_active_days': active_days,
+                'stat_days': len(recent_values),
+                'average_fantasy_points': (_num(total) / max(1, active_days)) if total is not None else 0,
+                'recent_average': (sum(recent) / len(recent)) if recent else _num(ppe.get('appliedStatTotal')),
             })
 
-    async def one(e):
-        try:
-            card = await player_card(req, e['id'], current_period)
-            card['position'] = card.get('position') or e.get('position')
-            if card.get('total_points') is None:
-                card['total_points'] = e.get('total_points')
-            return card
-        except Exception:
-            return {**e, 'stats': [], 'season_splits': []}
+    # Convert ESPN numeric position IDs to the same labels used by the UI.
+    labels = {1:'SP',2:'C',3:'1B',4:'2B',5:'3B',6:'SS',7:'LF',8:'CF',9:'RF',10:'OF',11:'DH',12:'RP',13:'P'}
+    for p in players:
+        p['position'] = labels.get(p.get('position'), p.get('position') or '—')
 
-    sem = asyncio.Semaphore(6)
-    async def bounded(e):
-        async with sem:
-            return await one(e)
-
-    cards = await asyncio.gather(*(bounded(e) for e in entries))
-    return build_ovr_rows(cards)
+    return build_ovr_rows(players)
