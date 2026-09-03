@@ -15,26 +15,47 @@
       window.FANTASY_OVR_READY=ratings.size>0;
       window.FANTASY_OVR_SOURCE=j.source||'ESPN Fantasy Baseball stats';
       paint();
-    }catch(e){console.warn('ESPN Fantasy OVR unavailable',e);window.FANTASY_OVR_READY=false}
-    finally{busy=false}
+    }catch(e){
+      console.warn('ESPN Fantasy OVR unavailable',e);
+      window.FANTASY_OVR_READY=false;
+    }finally{busy=false}
   }
 
   function paint(){
     document.querySelectorAll('tr.row').forEach(row=>{
-      const nameEl=row.querySelector('.pn');
+      const nameEl=row.querySelector('.pn,.showdd-name');
       if(!nameEl)return;
       const data=ratings.get(norm(nameEl.textContent));
       if(!data)return;
       const o=Math.round(Number(data.fantasy_ovr));
       if(!Number.isFinite(o))return;
-      const avatar=row.querySelector('.avatar');
-      if(avatar){
-        avatar.textContent=String(o);
-        avatar.className='avatar '+cls(o);
-        avatar.title='AI Fantasy GM OVR · calculated from live ESPN stats';
-        avatar.dataset.fantasyOvr=String(o);
+
+      const oldAvatar=row.querySelector('.avatar');
+      if(oldAvatar){
+        oldAvatar.textContent=String(o);
+        oldAvatar.className='avatar '+cls(o);
+        oldAvatar.title='AI Fantasy GM OVR · calculated from ESPN fantasy stats';
+        oldAvatar.dataset.fantasyOvr=String(o);
       }
-      const sub=nameEl.parentElement?.querySelector('.sub');
+
+      const showAvatar=row.querySelector('.showdd-avatar');
+      if(showAvatar){
+        showAvatar.classList.add('fantasy-ovr-player');
+        showAvatar.dataset.fantasyOvr=String(o);
+      }
+
+      const badge=row.querySelector('.showdd-ovr');
+      if(badge){
+        badge.textContent=String(o);
+        badge.className='showdd-ovr '+cls(o);
+        badge.title='AI Fantasy GM OVR · calculated from ESPN fantasy stats';
+        badge.dataset.fantasyOvr=String(o);
+      }
+
+      const live=row.querySelector('.showdd-live');
+      if(live)live.remove();
+
+      const sub=nameEl.parentElement?.querySelector('.sub,.showdd-sub');
       if(sub){
         sub.textContent='Fantasy OVR '+o+' · ESPN stats';
         sub.title=`Season ${data.total_points??'—'} pts · Avg ${data.average_fantasy_points??'—'} pts/day · Recent ${data.recent_average??'—'} pts/day`;
@@ -52,14 +73,14 @@
     note.id='fantasy-ovr-note';
     note.className='notice';
     note.style.marginTop='10px';
-    note.textContent='Fantasy OVR is calculated from live ESPN fantasy statistics and updates as player performance changes.';
+    note.textContent='Fantasy OVR is calculated from ESPN fantasy statistics and updates as player performance changes.';
     card.insertBefore(note,card.firstChild);
   }
 
   const observer=new MutationObserver(()=>{paint();addLabel()});
   observer.observe(document.body,{subtree:true,childList:true});
   window.refreshFantasyOVR=load;
-  setTimeout(load,800);
+  setTimeout(()=>{load();addLabel()},500);
   setInterval(()=>{if(localStorage.getItem('gm_token')&&!window.FANTASY_OVR_READY)load()},3000);
   setInterval(load,120000);
   setInterval(()=>{if(ratings.size)paint()},1000);
