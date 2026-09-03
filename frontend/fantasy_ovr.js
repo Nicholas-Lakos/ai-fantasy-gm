@@ -14,10 +14,13 @@ function paint(){
     const name=rowName(row),data=ratings.get(norm(name));if(!name||!data)return;
     const o=Number(data.fantasy_ovr);if(!Number.isFinite(o))return;
     const avatar=row.querySelector('.avatar');
-    if(avatar){avatar.textContent=String(o);avatar.className='avatar '+cls(o);avatar.dataset.fantasyOvr=String(o);avatar.removeAttribute('data-show-ovr');avatar.title='AI Fantasy GM OVR · ESPN fantasy stats'}
-    row.querySelectorAll('.live-ovr-badge,.live-label,.showdd-live').forEach(e=>e.remove());
-    const pn=row.querySelector('.pn');const sub=pn?.parentElement?.querySelector('.sub,.showdd-sub');
-    if(sub){sub.textContent='Fantasy OVR '+o+' · ESPN stats';sub.title='ESPN season fantasy points: '+(data.total_points??'—')+' · Current period: '+(data.applied_stat_total??'—')+' · Started: '+(data.percent_started??'—')+'%'}
+    if(avatar){avatar.textContent=String(o);avatar.className='avatar '+cls(o);avatar.dataset.fantasyOvr=String(o);avatar.removeAttribute('data-show-ovr');avatar.title='Fantasy OVR calculated from ESPN stats'}
+    const showOvr=row.querySelector('.showdd-ovr');
+    if(showOvr){showOvr.textContent=String(o);showOvr.className='showdd-ovr '+(o>=90?'showdd-elite':o>=80?'showdd-diamond':o>=70?'showdd-gold':o>=60?'showdd-silver':'showdd-bronze');showOvr.title='Fantasy OVR calculated from ESPN season stats';showOvr.dataset.fantasyOvr=String(o)}
+    const live=row.querySelector('.showdd-live');if(live)live.textContent='ESPN OVR';
+    row.querySelectorAll('.live-ovr-badge,.live-label').forEach(e=>e.remove());
+    const pn=row.querySelector('.pn,.showdd-name');const sub=pn?.parentElement?.querySelector('.sub,.showdd-sub');
+    if(sub){sub.textContent='ESPN Fantasy OVR '+o+' · '+(data.total_points??'—')+' season pts';sub.title='Calculated from ESPN season points, current-period points, and start rate.'}
   });
 }
 async function load(){
