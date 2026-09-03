@@ -1,9 +1,7 @@
 (()=>{
-  const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const norm=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9 ]/gi,'').replace(/\s+/g,' ').trim().toLowerCase();
   const cls=o=>o>=90?'ovr-elite':o>=80?'ovr-great':o>=70?'ovr-good':o>=60?'ovr-average':o>=50?'ovr-below':'ovr-poor';
-  let ratings=new Map();
-  let busy=false;
+  let ratings=new Map(),busy=false;
 
   async function load(){
     const token=localStorage.getItem('gm_token')||'';
@@ -54,7 +52,7 @@
     note.id='fantasy-ovr-note';
     note.className='notice';
     note.style.marginTop='10px';
-    note.textContent='Fantasy OVR is calculated from your live ESPN fantasy statistics and adjusts as player performance changes.';
+    note.textContent='Fantasy OVR is calculated from live ESPN fantasy statistics and updates as player performance changes.';
     card.insertBefore(note,card.firstChild);
   }
 
@@ -62,6 +60,7 @@
   observer.observe(document.body,{subtree:true,childList:true});
   window.refreshFantasyOVR=load;
   setTimeout(load,800);
+  setInterval(()=>{if(localStorage.getItem('gm_token')&&!window.FANTASY_OVR_READY)load()},3000);
   setInterval(load,120000);
   setInterval(()=>{if(ratings.size)paint()},1000);
 })();
