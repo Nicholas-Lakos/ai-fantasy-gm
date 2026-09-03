@@ -79,52 +79,67 @@ async def live(u,waivers=False):
  else:d=await rt;w=[]
  d['settings']=meta.get('settings') or d.get('settings') or {};d['scoringPeriodId']=p;return l,req,d,p,w
 async def player_card(req,pid,p):
- # kona_playercard is ESPN's deep per-player view and needs filterStatsForTopScoringPeriodIds
- # with season/type codes. kona_player_info often omits the detailed stats array.
  filters={'players':{'filterIds':{'value':[int(pid)]},'filterStatsForTopScoringPeriodIds':{'value':max(int(p),1),'additionalValue':[f'00{req.season}',f'10{req.season}']}}}
  try:d=await espn(req,['kona_playercard'],p,filters,timeout=25)
  except HTTPException:raise
- except Exception as e:raise HTTPException(502,'ESPN player stats request failed.')
+ except Exception:raise HTTPException(502,'ESPN player stats request failed.')
  items=d.get('players') or []
  if not items:raise HTTPException(404,'Player not found in ESPN player card.')
  x=items[0];pl=x.get('player') or {};pe=x.get('playerPoolEntry') or {};stats=[];current=0
  for s in pe.get('stats',[]) or []:
   if s.get('seasonId')==req.season and s.get('statTypeId')==0:
-   stats.append({'scoringPeriodId':s.get('scoringPeriodId'),'appliedTotal':s.get('appliedTotal'),'appliedStats':s.get('appliedStats') or {}})
-   current=max(current,float(s.get('appliedTotal') or 0))
- # Also expose every stat split so the frontend has something to render even when ESPN returns multiple season entries.
+   stats.append({'scoringPeriodId':s.get('scoringPeriodId'),'appliedTotal':s.get('appliedTotal'),'appliedStats':s.get('appliedStats') or {}});current=max(current,float(s.get('appliedTotal') or 0))
  if not stats:
-  for s in pe.get('stats',[]) or []:
-   stats.append({'seasonId':s.get('seasonId'),'statTypeId':s.get('statTypeId'),'scoringPeriodId':s.get('scoringPeriodId'),'appliedTotal':s.get('appliedTotal'),'appliedStats':s.get('appliedStats') or {}})
+  for s in pe.get('stats',[]) or []:stats.append({'seasonId':s.get('seasonId'),'statTypeId':s.get('statTypeId'),'scoringPeriodId':s.get('scoringPeriodId'),'appliedTotal':s.get('appliedTotal'),'appliedStats':s.get('appliedStats') or {}})
  return {'id':pid,'name':pl.get('fullName'),'position':POS.get(pl.get('defaultPositionId'),'—'),'eligible_positions':[POS.get(v,'—') for v in pl.get('eligibleSlots',[]) if v in POS],'pro_team_id':pl.get('proTeamId'),'injury_status':pl.get('injuryStatus'),'active':pl.get('active'),'total_points':pe.get('totalPoints'),'current_period_points':current or pe.get('appliedStatTotal'),'percent_owned':pe.get('percentOwned'),'percent_started':pe.get('percentStarted'),'stats':stats,'raw_stat_count':len(stats)}
 
-app=FastAPI(title='AI Fantasy GM',version='11.2');app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_methods=['*'],allow_headers=['*'])
-# LIVE_SHOW_OVR_SYSTEM_V2
+app=FastAPI(title='AI Fantasy GM',version='11.3');app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_methods=['*'],allow_headers=['*'])
 from show_live import live_ratings_for_names
 
 @app.get('/api/show/live-ratings')
 async def show_live_ratings(authorization: str = Header(None)):
-    u = uid(authorization)
-    l = league_row(u)
-    req = req_for(l)
-    data = await espn(req, ['mTeam', 'mRoster', 'mStatus'])
-    names = []
-    seen = set()
-    for team in data.get('teams', []):
-        for entry in (team.get('roster') or {}).get('entries', []):
-            ppe = entry.get('playerPoolEntry') or {}
-            player = ppe.get('player') or {}
-            name = player.get('fullName')
+    u=uid(authorization);l=league_row(u);req=req_for(l);data=await espn(req,['mTeam','mRoster','mStatus']);names=[];seen=set()
+    for team in data.get('teams',[]):
+        for entry in (team.get('roster') or {}).get('entries',[]):
+            player=(entry.get('playerPoolEntry') or {}).get('player') or {};name=player.get('fullName')
             if name:
-                key = ' '.join(str(name).split()).casefold()
-                if key not in seen:
-                    seen.add(key)
-                    names.append(name)
-    result = await live_ratings_for_names(names)
-    return result
+                key=' '.join(str(name).split()).casefold()
+                if key not in seen:seen.add(key);names.append(name)
+    return await live_ratings_for_names(names)
 
+def fantasy_ovr(players):
+    groups={}
+    rows=[]
+    for p in players:
+        if not p.get('name'):continue
+        pos=str(p.get('position') or 'P').upper();total=float(p.get('total_points') or 0);current=float(p.get('applied_stat_total') or 0);started=float(p.get('percent_started') or 0)
+        groups.setdefault(pos,[]).append(total);rows.append((p,pos,total,current,started))
+    all_current=[x[3] for x in rows]
+    def pct(v,a):
+        if len(a)<2:return .5
+        return (sum(1 for x in a if x<=v)-1)/(len(a)-1)
+    out=[]
+    for p,pos,total,current,started in rows:
+        season_pct=pct(total,groups.get(pos,[total]));current_pct=pct(current,all_current);start_pct=max(0,min(1,started/100))
+        if total==0 and current==0:o=55+12*start_pct
+        else:o=40+59*(season_pct*.72+current_pct*.18+start_pct*.10)
+        out.append({**p,'fantasy_ovr':max(40,min(99,round(o)))})
+    return out
+
+@app.get('/api/fantasy-ovr')
+async def fantasy_ovr_api(authorization:str=Header(None)):
+    u=uid(authorization);l,r,d,p,w=await live(u,True);players=[]
+    for t in d.get('teams',[]):players.extend(compact_team(t).get('roster',[]))
+    players.extend(w)
+    # De-duplicate players by ESPN id so a player is scored once.
+    unique={str(x.get('id')):x for x in players if x.get('id') is not None}
+    result=fantasy_ovr(list(unique.values()))
+    return {'season':l['season'],'scoring_period':p,'players':result,'count':len(result),'source':'ESPN Fantasy Baseball statistics'}
+
+@app.get('/fantasy_ovr.js')
+def fantasy_ovr_js():return FileResponse(os.path.join(ROOT,'frontend','fantasy_ovr.js'),media_type='application/javascript')
 @app.get('/health')
-def health():return {'ok':True,'version':'11.2','ai_provider':'openrouter-free','ai_configured':bool(os.getenv('OPENROUTER_API_KEY'))}
+def health():return {'ok':True,'version':'11.3','ai_provider':'openrouter-free','ai_configured':bool(os.getenv('OPENROUTER_API_KEY'))}
 @app.post('/auth/signup')
 def signup(a:Auth):
  c=db()
@@ -153,7 +168,7 @@ async def teams(authorization:str=Header(None)):
 async def team(team_id:int,authorization:str=Header(None)):
  u=uid(authorization);l,r,d,p,_=await live(u);t=next((x for x in d.get('teams',[]) if x.get('id')==team_id),None)
  if not t:raise HTTPException(404,'That team was not found')
- ss,rank=standings(d,team_id);return {'team':compact_team(t),'rank':rank,'standings':ss,'scoring_period':p}
+ ss,rank=standings(d,team_id);return {'team':compact_team(t),'rank':rank,'standings':ss}
 @app.get('/espn/my-team')
 async def myteam(authorization:str=Header(None)):return await dashboard(authorization)
 @app.get('/espn/waivers')
