@@ -108,14 +108,11 @@ async def show_live_ratings(authorization: str = Header(None)):
     return await live_ratings_for_names(names)
 
 def fantasy_ovr(players):
-    def number(value):
-        try:return float(value)
-        except (TypeError,ValueError):return 0.0
     groups={}
     rows=[]
     for p in players:
         if not p.get('name'):continue
-        pos=str(p.get('position') or 'P').upper();total=number(p.get('total_points'));current=number(p.get('applied_stat_total'));started=number(p.get('percent_started'))
+        pos=str(p.get('position') or 'P').upper();total=float(p.get('total_points') or 0);current=float(p.get('applied_stat_total') or 0);started=float(p.get('percent_started') or 0)
         groups.setdefault(pos,[]).append(total);rows.append((p,pos,total,current,started))
     all_current=[x[3] for x in rows]
     def pct(v,a):
