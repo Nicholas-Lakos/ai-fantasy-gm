@@ -40,13 +40,15 @@ function paintSeasonAverage(row,data){
   const total=Number(data.total_points),gp=Number(data.games_played??gamesCache.get(String(data.id)));
   if(!Number.isFinite(total)||!Number.isFinite(gp)||gp<=0)return;
   const avg=total/gp;
-  // The Fantasy Pts column is intentionally a per-game production metric.
-  // Keep the league season total directly underneath so both values remain visible.
-  cell.innerHTML='';
-  const main=document.createElement('div');main.className='pts';main.textContent=avg.toFixed(1)+' FPTS/G';
-  const detail=document.createElement('div');detail.className='sub';detail.textContent=total.toFixed(1)+' season pts · '+gp+' G';
+  let main=cell.querySelector('.fpts-per-game');
+  let detail=cell.querySelector('.fpts-season-detail');
+  if(!main){cell.querySelectorAll(':scope > *').forEach(e=>e.remove());main=document.createElement('div');main.className='pts fpts-per-game';cell.appendChild(main)}
+  if(!detail){detail=document.createElement('div');detail.className='sub fpts-season-detail';cell.appendChild(detail)}
+  const mainText=avg.toFixed(1)+' FPTS/G';
+  const detailText=total.toFixed(1)+' season pts · '+gp+' G';
+  if(main.textContent!==mainText)main.textContent=mainText;
+  if(detail.textContent!==detailText)detail.textContent=detailText;
   detail.title='League fantasy points ÷ MLB games played';
-  cell.appendChild(main);cell.appendChild(detail);
 }
 function paint(){
   document.querySelectorAll('#roster tr.row,#opRoster tr.row,#waiverRows tr.row').forEach(row=>{
