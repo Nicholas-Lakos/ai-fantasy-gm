@@ -9,23 +9,30 @@ function token(){
   return '';
 }
 function rowName(row){const e=row.querySelector('.pn,.showdd-name');return e?String(e.textContent||'').trim():''}
+function fantasyPtsCell(row){
+  const headers=[...row.closest('table')?.querySelectorAll('thead th')||[]].map(x=>String(x.textContent||'').trim().toLowerCase());
+  const i=headers.findIndex(x=>x.includes('fantasy pts')||x.includes('fantasy points'));
+  const cells=row.querySelectorAll('td');
+  return cells[i>=0?i:cells.length-1]||null;
+}
 function paintSeasonAverage(row,data){
-  const cells=row.querySelectorAll('td');if(!cells.length||!data)return;
-  const cell=cells[cells.length-1];
+  const cell=fantasyPtsCell(row);if(!cell||!data)return;
   const total=Number(data.total_points);
   const avg=Number(data.season_average);
   if(!Number.isFinite(avg))return;
   let main=cell.querySelector('.fpts-per-game');
   let detail=cell.querySelector('.fpts-season-detail');
-  if(!main){cell.querySelectorAll(':scope > *').forEach(e=>e.remove());main=document.createElement('div');main.className='pts fpts-per-game';cell.appendChild(main)}
+  if(!main){cell.replaceChildren();main=document.createElement('div');main.className='pts fpts-per-game';cell.appendChild(main)}
   if(!detail){detail=document.createElement('div');detail.className='sub fpts-season-detail';cell.appendChild(detail)}
   main.textContent=avg.toFixed(1)+' FPTS/G';
-  detail.textContent=Number.isFinite(total)?total.toFixed(1)+' season pts · ESPN league average':'ESPN league season average';
-  detail.title='Season fantasy average supplied by the connected ESPN league';
+  detail.textContent=Number.isFinite(total)?total.toFixed(1)+' season pts':'ESPN league season average';
+  detail.title='ESPN Fantasy Pts AVG for the connected league';
 }
 function paint(){
   document.querySelectorAll('#roster tr.row,#opRoster tr.row,#waiverRows tr.row').forEach(row=>{
-    const name=rowName(row),data=ratings.get(norm(name));if(!name||!data)return;
+    const name=rowName(row),data=ratings.get(norm(name));
+    if(!name||!data)return;
+    paintSeasonAverage(row,data);
     const o=Number(data.fantasy_ovr);if(!Number.isFinite(o))return;
     const avatar=row.querySelector('.avatar');
     if(avatar){avatar.textContent=String(o);avatar.className='avatar '+cls(o);avatar.dataset.fantasyOvr=String(o);avatar.removeAttribute('data-show-ovr');avatar.title='Fantasy OVR calculated from ESPN stats'}
@@ -33,7 +40,6 @@ function paint(){
     if(showOvr){showOvr.textContent=String(o);showOvr.className='showdd-ovr '+(o>=90?'showdd-elite':o>=80?'showdd-diamond':o>=70?'showdd-gold':o>=60?'showdd-silver':'showdd-bronze');showOvr.title='Fantasy OVR calculated from ESPN season stats';showOvr.dataset.fantasyOvr=String(o)}
     const pn=row.querySelector('.pn,.showdd-name');const sub=pn?.parentElement?.querySelector('.sub,.showdd-sub');
     if(sub){sub.textContent='ESPN Fantasy OVR '+o+' · '+(data.total_points??'—')+' season pts';sub.title='Calculated from ESPN fantasy stats.'}
-    paintSeasonAverage(row,data);
   });
 }
 async function load(){
@@ -48,7 +54,7 @@ async function load(){
     currentSeason=Number(d.season)||currentSeason;
     window.FANTASY_OVR_SOURCE=d.source||'ESPN Fantasy Baseball statistics';
     const players=Array.isArray(d.players)?d.players:[];
-    ratings=new Map(players.filter(p=>p&&p.name&&Number.isFinite(Number(p.fantasy_ovr))).map(p=>[norm(p.name),p]));
+    ratings=new Map(players.filter(p=>p&&p.name).map(p=>[norm(p.name),p]));
     window.FANTASY_OVR_READY=ratings.size>0;
     window.FANTASY_OVR_COUNT=ratings.size;
     window.FANTASY_OVR_ERROR='';
