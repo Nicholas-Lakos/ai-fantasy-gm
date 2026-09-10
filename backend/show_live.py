@@ -1,8 +1,6 @@
 import asyncio, html, re, time, unicodedata
 import httpx
 
-# ShowDD is the source used for the Live Series layout. Its server-rendered
-# catalog exposes each card's player name and current OVR in the image alt text.
 SHOWDD_BASE='https://www.showdd.io/series/live?page={}'
 THESHOWBASE_BASE='https://www.theshowbase.com/26/player/{}-live'
 CACHE_TTL=21600
@@ -89,11 +87,8 @@ async def live_ratings_for_names(names,force=False):
 async def live_ratings(force=False):
     return {'source':'showdd.io Live Series','game':'MLB The Show 26','count':0,'updated_at':time.time(),'players':[]}
 
-# ESPN's roster totalPoints can be a platform/default total rather than the
-# season aggregate calculated under the connected league's custom scoring rules.
-# The player-card endpoint exposes the league-scored season aggregate and the
-# league's season average. Patch the existing live pipeline once, at import time,
-# so every roster/AI/OVR consumer uses the same league-specific numbers.
+# ESPN league scoring patch. ESPN's roster data contains the league's season
+# fantasy totals and averages; keep those values attached to each roster entry.
 def _install_league_scoring_patch():
     import sys
     main=sys.modules.get('backend.main') or sys.modules.get('main')
@@ -102,13 +97,31 @@ def _install_league_scoring_patch():
     original_live=main.live
     original_compact_player=main.compact_player
 
-    # The enriched ESPN field lives on playerPoolEntry. Expose it through the
-    # normal compact player shape so /api/fantasy-ovr can serialize it.
-    def patched_compact_player(e):
-        result=original_compact_player(e)
-        ppe=e.get('playerPoolEntry') or {}
-        if ppe.get('seasonAverage') is not None:
-            result['season_average']=ppe.get('seasonAverage')
+    def patched_compact_player(entry):
+        result=original_compact_player(entry)
+        ppe=entry.get('playerPoolEntry') or {}
+        avg=ppe.get('seasonAverage')
+        # Fallback: read the season average directly from ESPN's roster/player
+        # stats. This is the same value displayed by ESPN's Fantasy Pts AVG.
+        if avg is None:
+            stats=ppe.get('stats') or []
+            averages=[]
+            for s in stats:
+                if s.get('seasonId') != getattr(entry.get('playerPoolEntry') or {}, '_season', s.get('seasonId')):
+                    pass
+                source=s.get('statSourceId',s.get('statTypeId'))
+                split=s.get('statSplitTypeId')
+                if source not in (0,'0') or split not in (None,0,'0'):
+                    continue
+                value=s.get('appliedAverage')
+                if value is not None:
+                    try: averages.append(float(value))
+                    except (TypeError,ValueError): pass
+            if averages:
+                avg=averages[-1]
+        if avg is not None:
+            try: result['season_average']=float(avg)
+            except (TypeError,ValueError): pass
         return result
 
     main.compact_player=patched_compact_player
@@ -120,56 +133,38 @@ def _install_league_scoring_patch():
         ids=[]
         for entry in entries:
             pid=entry.get('playerId') or (entry.get('playerPoolEntry') or {}).get('id')
-            if pid and int(pid) not in ids:
-                ids.append(int(pid))
-        if not ids:
-            return data
+            if pid and int(pid) not in ids: ids.append(int(pid))
+        if not ids:return data
         filters={'players':{'filterIds':{'value':ids},'filterStatsForTopScoringPeriodIds':{'value':max(int(scoring_period or 1),1),'additionalValue':[f'00{req.season}',f'10{req.season}']}}}
-        try:
-            payload=await main.espn(req,['kona_playercard'],scoring_period,filters,timeout=35)
-        except Exception:
-            return data
-        by_id={}
-        avg_by_id={}
+        try:payload=await main.espn(req,['kona_playercard'],scoring_period,filters,timeout=35)
+        except Exception:return data
+        by_id={};avg_by_id={}
         for item in payload.get('players',[]) or []:
             pid=item.get('id') or (item.get('player') or {}).get('id')
-            if not pid:
-                continue
+            if not pid:continue
             pe=item.get('playerPoolEntry') or {}
             stats=pe.get('stats') or (item.get('player') or {}).get('stats') or []
-            candidates=[]
-            averages=[]
+            candidates=[];averages=[]
             for s in stats:
-                if s.get('seasonId')!=req.season:
-                    continue
-                source=s.get('statSourceId',s.get('statTypeId'))
-                split=s.get('statSplitTypeId')
-                if source not in (0,'0'):
-                    continue
-                if split not in (None,0,'0'):
-                    continue
+                if s.get('seasonId')!=req.season:continue
+                source=s.get('statSourceId',s.get('statTypeId'));split=s.get('statSplitTypeId')
+                if source not in (0,'0') or split not in (None,0,'0'):continue
                 val=s.get('appliedTotal')
                 if val is not None:
-                    candidates.append(float(val))
+                    try:candidates.append(float(val))
+                    except (TypeError,ValueError):pass
                 avg=s.get('appliedAverage')
                 if avg is not None:
-                    averages.append(float(avg))
-            if candidates:
-                by_id[int(pid)]=candidates[-1]
-            if averages:
-                avg_by_id[int(pid)]=averages[-1]
-        if not by_id and not avg_by_id:
-            return data
+                    try:averages.append(float(avg))
+                    except (TypeError,ValueError):pass
+            if candidates:by_id[int(pid)]=candidates[-1]
+            if averages:avg_by_id[int(pid)]=averages[-1]
         for entry in entries:
             pid=entry.get('playerId') or (entry.get('playerPoolEntry') or {}).get('id')
-            if pid is None:
-                continue
-            pid=int(pid)
-            pe=entry.get('playerPoolEntry') or {}
-            if pid in by_id:
-                pe['totalPoints']=by_id[pid]
-            if pid in avg_by_id:
-                pe['seasonAverage']=avg_by_id[pid]
+            if pid is None:continue
+            pid=int(pid);pe=entry.get('playerPoolEntry') or {}
+            if pid in by_id:pe['totalPoints']=by_id[pid]
+            if pid in avg_by_id:pe['seasonAverage']=avg_by_id[pid]
             entry['playerPoolEntry']=pe
         return data
 
@@ -178,7 +173,6 @@ def _install_league_scoring_patch():
         league_row,req,data,p,w=result
         data=await enrich(req,data,p)
         return league_row,req,data,p,w
-
     main.live=patched_live
     main._league_scoring_patch_installed=True
 
