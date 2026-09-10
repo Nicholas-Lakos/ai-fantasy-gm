@@ -89,7 +89,7 @@ async def live_ratings_for_names(names,force=False):
 async def live_ratings(force=False):
     return {'source':'showdd.io Live Series','game':'MLB The Show 26','count':0,'updated_at':time.time(),'players':[]}
 
-# ESPN's roster `totalPoints` can be a platform/default total rather than the
+# ESPN's roster totalPoints can be a platform/default total rather than the
 # season aggregate calculated under the connected league's custom scoring rules.
 # The player-card endpoint exposes the league-scored season aggregate and the
 # league's season average. Patch the existing live pipeline once, at import time,
@@ -100,6 +100,18 @@ def _install_league_scoring_patch():
     if not main or getattr(main,'_league_scoring_patch_installed',False):
         return
     original_live=main.live
+    original_compact_player=main.compact_player
+
+    # The enriched ESPN field lives on playerPoolEntry. Expose it through the
+    # normal compact player shape so /api/fantasy-ovr can serialize it.
+    def patched_compact_player(e):
+        result=original_compact_player(e)
+        ppe=e.get('playerPoolEntry') or {}
+        if ppe.get('seasonAverage') is not None:
+            result['season_average']=ppe.get('seasonAverage')
+        return result
+
+    main.compact_player=patched_compact_player
 
     async def enrich(req, data, scoring_period):
         entries=[]
