@@ -20,7 +20,6 @@ def slug(name):
 
 def parse_showdd_page(text):
     found={}
-    # Example: alt="Yoshinobu Yamamoto, 87 Live - MLB the Show 26"
     pattern=re.compile(r'(?:alt|title)=[\"\']([^\"\']+?),\s*(\d{2,3})\s+Live\s*-\s*MLB\s+the\s+Show\s+26',re.I)
     for m in pattern.finditer(text or ''):
         name=html.unescape(m.group(1)).strip()
@@ -47,8 +46,6 @@ async def _catalog_for_names(names):
                 return parse_showdd_page(r.text)
             except Exception:return {}
     async with httpx.AsyncClient(follow_redirects=True) as client:
-        # Fetch ten pages at a time and stop once every requested league player
-        # has been found. This avoids maintaining a 2,036-player local database.
         for start in range(1,103,10):
             results=await asyncio.gather(*[fetch_page(client,p) for p in range(start,min(start+10,103))])
             for result in results:found.update(result)
@@ -63,7 +60,6 @@ async def _fallback(client,name,sem):
             headers={'User-Agent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/147.0 Safari/537.36','Accept':'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'}
             r=await client.get(url,headers=headers,timeout=20)
             if r.status_code!=200:return None
-            # The individual page exposes the current OVR as plain text.
             m=re.search(r'\b(\d{2,3})\s+OVR\b',html.unescape(r.text),re.I)
             if not m:return None
             o=int(m.group(1))
@@ -95,9 +91,9 @@ async def live_ratings(force=False):
 
 # ESPN's roster `totalPoints` can be a platform/default total rather than the
 # season aggregate calculated under the connected league's custom scoring rules.
-# The player-card endpoint exposes the league-scored season aggregate as
-# appliedTotal. Patch the existing live pipeline once, at import time, so every
-# roster/AI/OVR consumer uses the same league-specific number.
+# The player-card endpoint exposes the league-scored season aggregate and the
+# league's season average. Patch the existing live pipeline once, at import time,
+# so every roster/AI/OVR consumer uses the same league-specific numbers.
 def _install_league_scoring_patch():
     import sys
     main=sys.modules.get('backend.main') or sys.modules.get('main')
@@ -122,6 +118,7 @@ def _install_league_scoring_patch():
         except Exception:
             return data
         by_id={}
+        avg_by_id={}
         for item in payload.get('players',[]) or []:
             pid=item.get('id') or (item.get('player') or {}).get('id')
             if not pid:
@@ -129,6 +126,7 @@ def _install_league_scoring_patch():
             pe=item.get('playerPoolEntry') or {}
             stats=pe.get('stats') or (item.get('player') or {}).get('stats') or []
             candidates=[]
+            averages=[]
             for s in stats:
                 if s.get('seasonId')!=req.season:
                     continue
@@ -141,17 +139,25 @@ def _install_league_scoring_patch():
                 val=s.get('appliedTotal')
                 if val is not None:
                     candidates.append(float(val))
+                avg=s.get('appliedAverage')
+                if avg is not None:
+                    averages.append(float(avg))
             if candidates:
                 by_id[int(pid)]=candidates[-1]
-        if not by_id:
+            if averages:
+                avg_by_id[int(pid)]=averages[-1]
+        if not by_id and not avg_by_id:
             return data
         for entry in entries:
             pid=entry.get('playerId') or (entry.get('playerPoolEntry') or {}).get('id')
-            if pid is None or int(pid) not in by_id:
+            if pid is None:
                 continue
+            pid=int(pid)
             pe=entry.get('playerPoolEntry') or {}
-            pe['totalPoints']=by_id[int(pid)]
-            pe['appliedStatTotal']=pe.get('appliedStatTotal')
+            if pid in by_id:
+                pe['totalPoints']=by_id[pid]
+            if pid in avg_by_id:
+                pe['seasonAverage']=avg_by_id[pid]
             entry['playerPoolEntry']=pe
         return data
 
