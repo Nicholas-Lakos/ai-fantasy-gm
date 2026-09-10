@@ -1,7 +1,7 @@
 (()=>{
 const norm=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9 ]/gi,'').replace(/\s+/g,' ').trim().toLowerCase();
 const cls=o=>o>=90?'ovr-elite':o>=80?'ovr-great':o>=70?'ovr-good':o>=60?'ovr-average':o>=50?'ovr-below':'ovr-poor';
-let ratings=new Map(),loading=false,scoringPeriod=0;
+let ratings=new Map(),loading=false,scoringPeriod=0,currentSeason=2026;
 const gamesCache=new Map();
 function token(){
   const keys=['gm_token','token','auth_token','access_token','jwt','authToken','fantasy_gm_token','fantasyGMToken'];
@@ -26,7 +26,7 @@ async function loadGamesPlayed(players){
   await Promise.all(list.map(async p=>{
     const id=String(p.id);
     try{
-      const r=await fetch(`https://site.web.api.espn.com/apis/common/v3/sports/baseball/mlb/athletes/${encodeURIComponent(id)}/stats?season=2026&seasontype=2`,{cache:'no-store'});
+      const r=await fetch(`https://site.web.api.espn.com/apis/common/v3/sports/baseball/mlb/athletes/${encodeURIComponent(id)}/stats?season=${currentSeason}&seasontype=2`,{cache:'no-store'});
       if(!r.ok)throw new Error('stats '+r.status);
       const d=await r.json();
       const n=findGamesPlayed(d);
@@ -39,11 +39,14 @@ function paintSeasonAverage(row,data){
   const cell=cells[cells.length-1];
   const total=Number(data.total_points),gp=Number(data.games_played??gamesCache.get(String(data.id)));
   if(!Number.isFinite(total)||!Number.isFinite(gp)||gp<=0)return;
-  let avg=total/gp;
-  let el=cell.querySelector('.season-avg');
-  if(!el){el=document.createElement('div');el.className='sub season-avg';el.style.marginTop='3px';cell.appendChild(el)}
-  el.textContent='Season Avg '+avg.toFixed(1);
-  el.title='League fantasy points ÷ MLB games played';
+  const avg=total/gp;
+  // The Fantasy Pts column is intentionally a per-game production metric.
+  // Keep the league season total directly underneath so both values remain visible.
+  cell.innerHTML='';
+  const main=document.createElement('div');main.className='pts';main.textContent=avg.toFixed(1)+' FPTS/G';
+  const detail=document.createElement('div');detail.className='sub';detail.textContent=total.toFixed(1)+' season pts · '+gp+' G';
+  detail.title='League fantasy points ÷ MLB games played';
+  cell.appendChild(main);cell.appendChild(detail);
 }
 function paint(){
   document.querySelectorAll('#roster tr.row,#opRoster tr.row,#waiverRows tr.row').forEach(row=>{
@@ -70,6 +73,7 @@ async function load(){
     if(!r.ok)throw new Error('Fantasy OVR API HTTP '+r.status);
     const d=await r.json();
     scoringPeriod=Number(d.scoring_period)||0;
+    currentSeason=Number(d.season)||currentSeason;
     window.FANTASY_SCORING_PERIOD=scoringPeriod;
     const players=Array.isArray(d.players)?d.players:[];
     ratings=new Map(players.filter(p=>p&&p.name&&Number.isFinite(Number(p.fantasy_ovr))).map(p=>[norm(p.name),p]));
