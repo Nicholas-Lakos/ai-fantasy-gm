@@ -1,7 +1,7 @@
 (()=>{
 const norm=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9 ]/gi,'').replace(/\s+/g,' ').trim().toLowerCase();
 const cls=o=>o>=90?'ovr-elite':o>=80?'ovr-great':o>=70?'ovr-good':o>=60?'ovr-average':o>=50?'ovr-below':'ovr-poor';
-let ratings=new Map(),loading=false;
+let ratings=new Map(),loading=false,scoringPeriod=0;
 function token(){
   const keys=['gm_token','token','auth_token','access_token','jwt','authToken','fantasy_gm_token','fantasyGMToken'];
   for(const k of keys){try{const v=localStorage.getItem(k)||sessionStorage.getItem(k);if(v&&v.split('.').length===3)return v}catch{}}
@@ -9,6 +9,17 @@ function token(){
   return '';
 }
 function rowName(row){const e=row.querySelector('.pn,.showdd-name');return e?String(e.textContent||'').trim():''}
+function paintSeasonAverage(row,data){
+  const cells=row.querySelectorAll('td');if(!cells.length||!data)return;
+  const cell=cells[cells.length-1];
+  let total=Number(data.total_points),period=Number(scoringPeriod);
+  if(!Number.isFinite(total)||!Number.isFinite(period)||period<=0)return;
+  let avg=total/period;
+  let el=cell.querySelector('.season-avg');
+  if(!el){el=document.createElement('div');el.className='sub season-avg';el.style.marginTop='3px';cell.appendChild(el)}
+  el.textContent='Season Avg '+avg.toFixed(1);
+  el.title='ESPN season fantasy points ÷ scoring periods completed';
+}
 function paint(){
   document.querySelectorAll('#roster tr.row,#opRoster tr.row,#waiverRows tr.row').forEach(row=>{
     const name=rowName(row),data=ratings.get(norm(name));if(!name||!data)return;
@@ -21,6 +32,7 @@ function paint(){
     row.querySelectorAll('.live-ovr-badge,.live-label').forEach(e=>e.remove());
     const pn=row.querySelector('.pn,.showdd-name');const sub=pn?.parentElement?.querySelector('.sub,.showdd-sub');
     if(sub){sub.textContent='ESPN Fantasy OVR '+o+' · '+(data.total_points??'—')+' season pts';sub.title='Calculated from ESPN season points, current-period points, and start rate.'}
+    paintSeasonAverage(row,data);
   });
 }
 async function load(){
@@ -32,6 +44,8 @@ async function load(){
     const r=await fetch('/api/fantasy-ovr?ts='+Date.now(),{cache:'no-store',credentials:'include',headers:{Authorization:'Bearer '+t}});
     if(!r.ok)throw new Error('Fantasy OVR API HTTP '+r.status);
     const d=await r.json();
+    scoringPeriod=Number(d.scoring_period)||0;
+    window.FANTASY_SCORING_PERIOD=scoringPeriod;
     const players=Array.isArray(d.players)?d.players:[];
     ratings=new Map(players.filter(p=>p&&p.name&&Number.isFinite(Number(p.fantasy_ovr))).map(p=>[norm(p.name),p]));
     window.FANTASY_OVR_READY=ratings.size>0;
