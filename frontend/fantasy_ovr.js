@@ -20,53 +20,41 @@ function explicitGamesPlayed(value){
   for(const v of Object.values(value)){const n=explicitGamesPlayed(v);if(Number.isFinite(n))return n}
   return null;
 }
-function countGamelogGames(value){
-  const ids=new Set();
-  const walk=v=>{
-    if(!v||typeof v!=='object')return;
-    if(Array.isArray(v)){v.forEach(walk);return}
-    const id=v.eventId??v.eventID??v.gameId??v.gameID;
-    const date=v.date;
-    if(id!=null)ids.add(String(id));
-    else if(date)ids.add(String(date).slice(0,10));
-    Object.values(v).forEach(walk);
-  };
-  walk(value);
-  return ids.size>0&&ids.size<200?ids.size:null;
+function playedFromGamelog(value){
+  const items=value?.events?.items;
+  if(Array.isArray(items)){
+    const played=items.filter(x=>x&&x.played===true);
+    if(played.length)return played.length;
+    const unique=new Set(items.map(x=>x?.event?.id||x?.eventId||x?.id).filter(Boolean));
+    if(unique.size)return unique.size;
+  }
+  if(Array.isArray(value?.events)){
+    const played=value.events.filter(x=>x&&x.played!==false);
+    if(played.length)return played.length;
+  }
+  return null;
 }
 async function espnGamesPlayed(p){
   const id=String(p.id);
-  const urls=[
-    `https://site.web.api.espn.com/apis/common/v3/sports/baseball/mlb/athletes/${encodeURIComponent(id)}/stats?season=${currentSeason}&seasontype=2`,
-    `https://site.web.api.espn.com/apis/common/v3/sports/baseball/mlb/athletes/${encodeURIComponent(id)}/gamelog?season=${currentSeason}&seasontype=2`
-  ];
-  let lastErr=null;
-  for(const url of urls){
-    try{
-      const r=await fetch(url,{cache:'no-store'});
-      if(!r.ok)throw new Error('ESPN '+r.status);
-      const d=await r.json();
-      const explicit=explicitGamesPlayed(d);
-      if(Number.isFinite(explicit))return explicit;
-      const counted=countGamelogGames(d);
-      if(Number.isFinite(counted)&&counted>0)return counted;
-    }catch(e){lastErr=e}
-  }
-  throw lastErr||new Error('ESPN games played unavailable');
+  const base=`https://site.web.api.espn.com/apis/common/v3/sports/baseball/mlb/athletes/${encodeURIComponent(id)}`;
+  const statsUrl=`${base}/stats?season=${currentSeason}&seasontype=2`;
+  const logUrl=`${base}/gamelog?season=${currentSeason}&seasontype=2`;
+  try{
+    const r=await fetch(statsUrl,{cache:'no-store',credentials:'omit'});
+    if(r.ok){const d=await r.json();const n=explicitGamesPlayed(d);if(Number.isFinite(n))return n}
+  }catch(e){}
+  try{
+    const r=await fetch(logUrl,{cache:'no-store',credentials:'omit'});
+    if(r.ok){const d=await r.json();const n=playedFromGamelog(d);if(Number.isFinite(n)&&n>0&&n<200)return n;const fallback=explicitGamesPlayed(d);if(Number.isFinite(fallback))return fallback}
+  }catch(e){}
+  throw new Error('ESPN games played unavailable');
 }
 async function loadGamesPlayed(players){
   const list=(players||[]).filter(p=>p&&p.id&&!gamesCache.has(String(p.id)));
   if(!list.length)return;
-  await Promise.all(list.map(async p=>{
-    const id=String(p.id);
-    try{
-      const n=await espnGamesPlayed(p);
-      gamesCache.set(id,Number.isFinite(n)?n:null);
-    }catch(e){
-      gamesCache.set(id,null);
-      console.warn('ESPN games played unavailable for',p.name,e);
-    }
-  }));
+  const queue=[...list];
+  const worker=async()=>{while(queue.length){const p=queue.shift();if(!p)break;const id=String(p.id);try{const n=await espnGamesPlayed(p);gamesCache.set(id,n)}catch(e){gamesCache.delete(id);console.warn('ESPN games played unavailable for',p.name,e)}}};
+  await Promise.all([worker(),worker(),worker(),worker()]);
 }
 function paintSeasonAverage(row,data){
   const cells=row.querySelectorAll('td');if(!cells.length||!data)return;
