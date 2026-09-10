@@ -11,7 +11,7 @@ function token(){
 function rowName(row){const e=row.querySelector('.pn,.showdd-name');return e?String(e.textContent||'').trim():''}
 function fantasyPtsCell(row){
   const headers=[...row.closest('table')?.querySelectorAll('thead th')||[]].map(x=>String(x.textContent||'').trim().toLowerCase());
-  const i=headers.findIndex(x=>x.includes('fantasy pts')||x.includes('fantasy points'));
+  const i=headers.findIndex(x=>x.includes('fantasy pts')||x.includes('fantasy points')||x.includes('season pts'));
   const cells=row.querySelectorAll('td');
   return cells[i>=0?i:cells.length-1]||null;
 }
@@ -42,19 +42,32 @@ function paint(){
     if(sub){sub.textContent='ESPN Fantasy OVR '+o+' · '+(data.total_points??'—')+' season pts';sub.title='Calculated from ESPN fantasy stats.'}
   });
 }
+function mergePlayers(players){
+  for(const p of players||[]){if(!p||!p.name)continue;const key=norm(p.name),old=ratings.get(key)||{};ratings.set(key,{...old,...p})}
+}
 async function load(){
   if(loading)return false;
   const t=token();
   if(!t){window.FANTASY_OVR_ERROR='No JWT found in browser storage';return false}
   loading=true;
   try{
-    const r=await fetch('/api/fantasy-ovr?ts='+Date.now(),{cache:'no-store',credentials:'include',headers:{Authorization:'Bearer '+t}});
-    if(!r.ok)throw new Error('Fantasy OVR API HTTP '+r.status);
-    const d=await r.json();
+    const [ovrResp,dashResp]=await Promise.all([
+      fetch('/api/fantasy-ovr?ts='+Date.now(),{cache:'no-store',credentials:'include',headers:{Authorization:'Bearer '+t}}),
+      fetch('/dashboard?ts='+Date.now(),{cache:'no-store',credentials:'include',headers:{Authorization:'Bearer '+t}})
+    ]);
+    if(!ovrResp.ok)throw new Error('Fantasy OVR API HTTP '+ovrResp.status);
+    const d=await ovrResp.json();
     currentSeason=Number(d.season)||currentSeason;
     window.FANTASY_OVR_SOURCE=d.source||'ESPN Fantasy Baseball statistics';
     const players=Array.isArray(d.players)?d.players:[];
-    ratings=new Map(players.filter(p=>p&&p.name).map(p=>[norm(p.name),p]));
+    ratings=new Map();
+    mergePlayers(players);
+    if(dashResp.ok){
+      try{
+        const dash=await dashResp.json();
+        for(const team of dash.teams||[]){mergePlayers(team.roster||[])}
+      }catch{}
+    }
     window.FANTASY_OVR_READY=ratings.size>0;
     window.FANTASY_OVR_COUNT=ratings.size;
     window.FANTASY_OVR_ERROR='';
