@@ -92,3 +92,76 @@ async def live_ratings_for_names(names,force=False):
 
 async def live_ratings(force=False):
     return {'source':'showdd.io Live Series','game':'MLB The Show 26','count':0,'updated_at':time.time(),'players':[]}
+
+# ESPN's roster `totalPoints` can be a platform/default total rather than the
+# season aggregate calculated under the connected league's custom scoring rules.
+# The player-card endpoint exposes the league-scored season aggregate as
+# appliedTotal. Patch the existing live pipeline once, at import time, so every
+# roster/AI/OVR consumer uses the same league-specific number.
+def _install_league_scoring_patch():
+    import sys
+    main=sys.modules.get('backend.main') or sys.modules.get('main')
+    if not main or getattr(main,'_league_scoring_patch_installed',False):
+        return
+    original_live=main.live
+
+    async def enrich(req, data, scoring_period):
+        entries=[]
+        for team in data.get('teams',[]) or []:
+            entries.extend((team.get('roster') or {}).get('entries',[]) or [])
+        ids=[]
+        for entry in entries:
+            pid=entry.get('playerId') or (entry.get('playerPoolEntry') or {}).get('id')
+            if pid and int(pid) not in ids:
+                ids.append(int(pid))
+        if not ids:
+            return data
+        filters={'players':{'filterIds':{'value':ids},'filterStatsForTopScoringPeriodIds':{'value':max(int(scoring_period or 1),1),'additionalValue':[f'00{req.season}',f'10{req.season}']}}}
+        try:
+            payload=await main.espn(req,['kona_playercard'],scoring_period,filters,timeout=35)
+        except Exception:
+            return data
+        by_id={}
+        for item in payload.get('players',[]) or []:
+            pid=item.get('id') or (item.get('player') or {}).get('id')
+            if not pid:
+                continue
+            pe=item.get('playerPoolEntry') or {}
+            stats=pe.get('stats') or (item.get('player') or {}).get('stats') or []
+            candidates=[]
+            for s in stats:
+                if s.get('seasonId')!=req.season:
+                    continue
+                source=s.get('statSourceId',s.get('statTypeId'))
+                split=s.get('statSplitTypeId')
+                if source not in (0,'0'):
+                    continue
+                if split not in (None,0,'0'):
+                    continue
+                val=s.get('appliedTotal')
+                if val is not None:
+                    candidates.append(float(val))
+            if candidates:
+                by_id[int(pid)]=candidates[-1]
+        if not by_id:
+            return data
+        for entry in entries:
+            pid=entry.get('playerId') or (entry.get('playerPoolEntry') or {}).get('id')
+            if pid is None or int(pid) not in by_id:
+                continue
+            pe=entry.get('playerPoolEntry') or {}
+            pe['totalPoints']=by_id[int(pid)]
+            pe['appliedStatTotal']=pe.get('appliedStatTotal')
+            entry['playerPoolEntry']=pe
+        return data
+
+    async def patched_live(u,waivers=False):
+        result=await original_live(u,waivers)
+        league_row,req,data,p,w=result
+        data=await enrich(req,data,p)
+        return league_row,req,data,p,w
+
+    main.live=patched_live
+    main._league_scoring_patch_installed=True
+
+_install_league_scoring_patch()
