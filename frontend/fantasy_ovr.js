@@ -3,6 +3,7 @@ const norm=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').repl
 const cls=o=>o>=90?'ovr-elite':o>=80?'ovr-great':o>=70?'ovr-good':o>=60?'ovr-average':o>=50?'ovr-below':'ovr-poor';
 let ratings=new Map(),loading=false,scoringPeriod=0,currentSeason=2026;
 const gamesCache=new Map();
+const mlbIdCache=new Map();
 function token(){
   const keys=['gm_token','token','auth_token','access_token','jwt','authToken','fantasy_gm_token','fantasyGMToken'];
   for(const k of keys){try{const v=localStorage.getItem(k)||sessionStorage.getItem(k);if(v&&v.split('.').length===3)return v}catch{}}
@@ -20,16 +21,50 @@ function findGamesPlayed(value){
   for(const v of Object.values(value)){const n=findGamesPlayed(v);if(Number.isFinite(n))return n}
   return null;
 }
+async function espnGamesPlayed(p){
+  const id=String(p.id);
+  const r=await fetch(`https://site.web.api.espn.com/apis/common/v3/sports/baseball/mlb/athletes/${encodeURIComponent(id)}/stats?season=${currentSeason}&seasontype=2`,{cache:'no-store'});
+  if(!r.ok)throw new Error('ESPN stats '+r.status);
+  const d=await r.json();
+  const n=findGamesPlayed(d);
+  if(!Number.isFinite(n))throw new Error('ESPN GP missing');
+  return n;
+}
+async function mlbGamesPlayed(name){
+  const key=norm(name);
+  if(mlbIdCache.has(key)){
+    const id=mlbIdCache.get(key);
+    if(!id)return null;
+    const r=await fetch(`https://statsapi.mlb.com/api/v1/people/${id}/stats?stats=season&group=hitting,pitching&season=${currentSeason}`,{cache:'no-store'});
+    if(!r.ok)return null;
+    const d=await r.json();
+    return findGamesPlayed(d);
+  }
+  const r=await fetch(`https://statsapi.mlb.com/api/v1/people/search?names=${encodeURIComponent(name)}`,{cache:'no-store'});
+  if(!r.ok)return null;
+  const d=await r.json();
+  const people=Array.isArray(d.people)?d.people:[];
+  const exact=people.find(x=>norm(x.fullName)===key)||people[0];
+  const id=exact?.id||null;
+  mlbIdCache.set(key,id);
+  if(!id)return null;
+  const sr=await fetch(`https://statsapi.mlb.com/api/v1/people/${id}/stats?stats=season&group=hitting,pitching&season=${currentSeason}`,{cache:'no-store'});
+  if(!sr.ok)return null;
+  const sd=await sr.json();
+  return findGamesPlayed(sd);
+}
 async function loadGamesPlayed(players){
   const list=(players||[]).filter(p=>p&&p.id&&!gamesCache.has(String(p.id)));
   if(!list.length)return;
   await Promise.all(list.map(async p=>{
     const id=String(p.id);
     try{
-      const r=await fetch(`https://site.web.api.espn.com/apis/common/v3/sports/baseball/mlb/athletes/${encodeURIComponent(id)}/stats?season=${currentSeason}&seasontype=2`,{cache:'no-store'});
-      if(!r.ok)throw new Error('stats '+r.status);
-      const d=await r.json();
-      const n=findGamesPlayed(d);
+      const n=await espnGamesPlayed(p);
+      gamesCache.set(id,Number.isFinite(n)?n:null);
+      return;
+    }catch{}
+    try{
+      const n=await mlbGamesPlayed(p.name);
       gamesCache.set(id,Number.isFinite(n)?n:null);
     }catch{gamesCache.set(id,null)}
   }));
