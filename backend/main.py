@@ -57,6 +57,10 @@ def league_row(u):
  x=db().execute('SELECT * FROM leagues WHERE user_id=? ORDER BY id DESC LIMIT 1',(u,)).fetchone()
  if not x:raise HTTPException(404,'Connect an ESPN league first')
  return x
+
+def saved_league(u):
+ x=league_row(u)
+ return {'connected':True,'league_id':x['league_id'],'team_id':x['team_id'],'season':x['season'],'league_name':x['league_name'] or 'ESPN Fantasy League','has_espn_credentials':bool(x['espn_s2'] and x['swid'])}
 async def pool(req,p,limit=500):
  filters={'players':{'filterStatus':{'value':['FREEAGENT','WAIVERS']},'limit':limit,'sortPercOwned':{'sortPriority':1,'sortAsc':False}}}
  try:d=await espn(req,['kona_player_info'],p,filters,timeout=35);items=d.get('players') or []
@@ -154,6 +158,19 @@ def login(a:Auth):
 @app.get('/auth/me')
 def me(authorization:str=Header(None)):
  u=db().execute('SELECT id,email,name FROM users WHERE id=?',(uid(authorization),)).fetchone();return {'user':dict(u)}
+@app.get('/espn/saved')
+def saved_espn(authorization:str=Header(None)):
+    return saved_league(uid(authorization))
+
+@app.post('/espn/reconnect')
+async def reconnect(authorization:str=Header(None)):
+    u=uid(authorization);l=league_row(u);r=req_for(l)
+    m=await espn(r,['mSettings','mTeam','mStandings','mStatus'])
+    name=(m.get('settings') or {}).get('name') or l['league_name'] or 'ESPN Fantasy League'
+    c=db();c.execute('UPDATE leagues SET league_name=?,context_json=?,updated_at=? WHERE id=?',(name,json.dumps(m),datetime.utcnow().isoformat(),l['id']));c.commit()
+    ss,rank=standings(m,r.team_id)
+    return {'connected':True,'name':name,'teams':len(ss),'rank':rank}
+
 @app.post('/espn/connect')
 async def connect(r:ESPNConnect,authorization:str=Header(None)):
  u=uid(authorization);m=await espn(r,['mSettings','mTeam','mStandings','mStatus']);name=(m.get('settings') or {}).get('name') or 'ESPN Fantasy League';c=db();c.execute('DELETE FROM leagues WHERE user_id=?',(u,));c.execute('INSERT INTO leagues(user_id,league_id,team_id,season,espn_s2,swid,league_name,context_json,updated_at) VALUES(?,?,?,?,?,?,?,?,?)',(u,r.league_id,r.team_id,r.season,r.espn_s2,r.swid,name,json.dumps(m),datetime.utcnow().isoformat()));c.commit();ss,rank=standings(m,r.team_id);return {'connected':True,'name':name,'teams':len(ss),'rank':rank}
