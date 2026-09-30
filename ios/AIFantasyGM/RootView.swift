@@ -1,51 +1,7 @@
 import SwiftUI
-
-struct RootView: View {
-    @EnvironmentObject var session: SessionStore
-
-    var body: some View {
-        if session.isSignedIn {
-            MainTabView()
-        } else {
-            SignInView()
-        }
-    }
+struct RootView:View{@EnvironmentObject var session:SessionStore;var body:some View{Group{if session.isSignedIn{MainTabView()}else{SignInView()}}.preferredColorScheme(.dark)}}
+struct SignInView:View{
+ @EnvironmentObject var session:SessionStore;@State private var email="",password="",name="";@State private var signup=false
+ var body:some View{ZStack{LinearGradient(colors:[.black,Color(red:0.03,green:0.13,blue:0.08)],startPoint:.top,endPoint:.bottom).ignoresSafeArea();VStack(spacing:18){Spacer();Image(systemName:"baseball.fill").font(.system(size:64)).foregroundStyle(.green);Text("AI FANTASY GM").font(.largeTitle.bold());Text("YOUR FANTASY BASEBALL FRONT OFFICE").font(.caption.bold()).foregroundStyle(.secondary);if signup{TextField("Name",text:$name).textFieldStyle(.roundedBorder)};TextField("Email",text:$email).textInputAutocapitalization(.never).keyboardType(.emailAddress).textFieldStyle(.roundedBorder);SecureField("Password",text:$password).textFieldStyle(.roundedBorder);if let e=session.errorMessage{Text(e).font(.footnote).foregroundStyle(.red)};Button(session.isLoading ? "Loading…" : (signup ? "Create Account":"Sign In")){Task{await session.authenticate(email:email,password:password,signup:signup,name:name.isEmpty ? "Fantasy Manager":name)}}.buttonStyle(.borderedProminent).tint(.green).controlSize(.large).disabled(session.isLoading || email.isEmpty || password.count<6);Button(signup ? "Already have an account? Sign In":"New here? Create Account"){signup.toggle();session.errorMessage=nil}.foregroundStyle(.secondary);Spacer()}.padding(28)}}
 }
-
-struct SignInView: View {
-    @EnvironmentObject var session: SessionStore
-    @State private var email = ""
-    @State private var password = ""
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 18) {
-                Spacer()
-                Image(systemName: "baseball.fill").font(.system(size: 64))
-                Text("AI Fantasy GM").font(.largeTitle.bold())
-                Text("Your fantasy baseball front office").foregroundStyle(.secondary)
-                TextField("Email", text: $email).textInputAutocapitalization(.never).keyboardType(.emailAddress).textFieldStyle(.roundedBorder)
-                SecureField("Password", text: $password).textFieldStyle(.roundedBorder)
-                Button("Sign In") {
-                    // Auth wiring is the next backend-migration step.
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                Spacer()
-            }
-            .padding()
-        }
-    }
-}
-
-struct MainTabView: View {
-    var body: some View {
-        TabView {
-            DashboardView().tabItem { Label("Home", systemImage: "house.fill") }
-            MyTeamView().tabItem { Label("My Team", systemImage: "person.3.fill") }
-            WaiversView().tabItem { Label("Waivers", systemImage: "magnifyingglass") }
-            AIGMView().tabItem { Label("AI GM", systemImage: "sparkles") }
-            SettingsView().tabItem { Label("Settings", systemImage: "gearshape.fill") }
-        }
-    }
-}
+struct MainTabView:View{var body:some View{TabView{DashboardView().tabItem{Label("Home",systemImage:"house.fill")};MyTeamView().tabItem{Label("My Team",systemImage:"person.3.fill")};WaiversView().tabItem{Label("Waivers",systemImage:"magnifyingglass")};AIGMView().tabItem{Label("AI GM",systemImage:"sparkles")};SettingsView().tabItem{Label("Settings",systemImage:"gearshape.fill")}}.tint(.green)}}
