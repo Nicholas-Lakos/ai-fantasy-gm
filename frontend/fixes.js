@@ -71,4 +71,4 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 
 
 /* FANTASY_OVR_LOADER_V2 */
-(()=>{const load=()=>{if(document.querySelector('script[data-fantasy-ovr]'))return;const s=document.createElement('script');s.src='/fantasy_ovr.js?v=20260903';s.async=false;s.dataset.fantasyOvr='1';document.head.appendChild(s)};if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',load,{once:true});else load()})();
+(()=>{const load=()=>{if(document.querySelector('script[data-fantasy-ovr]'))return;const s=document.createElement('script');s.src='./fantasy_ovr.js?v=20260930';s.async=false;s.dataset.fantasyOvr='1';document.head.appendChild(s)};if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',load,{once:true});else load()})();
