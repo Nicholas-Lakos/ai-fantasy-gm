@@ -10,7 +10,14 @@ BASE=os.path.dirname(os.path.abspath(__file__));ROOT=os.path.dirname(BASE);DB=os
 ESPN_BASE='https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb/seasons';OR_BASE='https://openrouter.ai/api/v1/chat/completions';OR_MODEL=os.getenv('OPENROUTER_MODEL','openrouter/free')
 POS={1:'SP',2:'C',3:'1B',4:'2B',5:'3B',6:'SS',7:'LF',8:'CF',9:'RF',10:'OF',11:'DH',12:'RP',13:'P'};SLOT={0:'C',1:'1B',2:'2B',3:'3B',4:'SS',5:'OF',7:'UTIL',12:'BENCH',13:'SP',14:'RP',15:'P',17:'P'}
 def db():
- c=sqlite3.connect(DB,timeout=15);c.row_factory=sqlite3.Row;c.execute('CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,name TEXT NOT NULL)');c.execute('CREATE TABLE IF NOT EXISTS leagues(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,league_id TEXT NOT NULL,team_id INTEGER NOT NULL,season INTEGER NOT NULL,espn_s2 TEXT,swid TEXT,league_name TEXT,context_json TEXT,updated_at TEXT)');c.execute('CREATE TABLE IF NOT EXISTS ai_messages(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,role TEXT NOT NULL,content TEXT NOT NULL,created_at TEXT NOT NULL)');c.commit();return c
+ c=sqlite3.connect(DB,timeout=30,isolation_level=None);c.row_factory=sqlite3.Row
+ c.execute('PRAGMA busy_timeout=30000')
+ try:c.execute('PRAGMA journal_mode=WAL')
+ except sqlite3.OperationalError:pass
+ c.execute('CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,name TEXT NOT NULL)')
+ c.execute('CREATE TABLE IF NOT EXISTS leagues(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,league_id TEXT NOT NULL,team_id INTEGER NOT NULL,season INTEGER NOT NULL,espn_s2 TEXT,swid TEXT,league_name TEXT,context_json TEXT,updated_at TEXT)')
+ c.execute('CREATE TABLE IF NOT EXISTS ai_messages(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,role TEXT NOT NULL,content TEXT NOT NULL,created_at TEXT NOT NULL)')
+ return c
 def ph(p,s=None):s=s or secrets.token_hex(16);return f'pbkdf2$210000${s}${hashlib.pbkdf2_hmac("sha256",p.encode(),s.encode(),210000).hex()}'
 def pv(p,v):
  try:_,n,s,d=v.split('$',3);return hmac.compare_digest(hashlib.pbkdf2_hmac('sha256',p.encode(),s.encode(),int(n)).hex(),d)
