@@ -1,33 +1,17 @@
 (()=>{
-const norm=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9 ]/gi,'').replace(/\s+/g,' ').trim().toLowerCase();
-const slug=n=>String(n||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
-const token=()=>localStorage.getItem('gm_token')||sessionStorage.getItem('gm_token')||'';
+const norm=s=>String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9 ]/gi,'').replace(/\s+/g,' ').trim().toLowerCase();
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const ratings=new Map();
-const ids=new Map();
+const slug=n=>String(n||'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
 const espn=(id,name)=>id?`https://www.espn.com/mlb/player/_/id/${encodeURIComponent(id)}/${encodeURIComponent(slug(name))}`:'https://www.espn.com/mlb/';
-window.espnPlayerUrl=espn;
-function nameOf(row){return String(row.querySelector('.pn,.showdd-name')?.textContent||'').trim()}
-function apply(){
- document.querySelectorAll('#roster tr.row,#opRoster tr.row,#waiverRows tr.row').forEach(row=>{
-  const name=nameOf(row);if(!name)return;const key=norm(name),rating=ratings.get(key),id=ids.get(key)||row.dataset.espnId;
-  if(Number.isFinite(rating)){
-   const avatar=row.querySelector('.avatar,.showdd-avatar');if(avatar){avatar.textContent=String(Math.round(rating));avatar.title='MLB The Show Live Series Overall';}
-   let badge=row.querySelector('.showdd-ovr');if(badge){badge.textContent=String(Math.round(rating));badge.title='MLB The Show Live Series Overall';}
-   const sub=row.querySelector('.sub,.showdd-sub');if(sub)sub.textContent='Live Series';
-  }
-  if(id){row.dataset.espnId=String(id);row.dataset.espnName=name;row.title='Open player on ESPN';}
- });
-}
-async function loadIds(){
- const t=token();if(!t)return;
- try{const r=await fetch('/dashboard?ts='+Date.now(),{cache:'no-store',headers:{Authorization:'Bearer '+t}});if(!r.ok)return;const d=await r.json();for(const team of d.teams||[])for(const p of team.roster||[])if(p?.name&&p?.id)ids.set(norm(p.name),p.id);apply()}catch{}
-}
-async function loadRatings(){
- const t=token();if(!t)return;
- try{const r=await fetch('/api/show/live-ratings?force=false&ts='+Date.now(),{cache:'no-store',headers:{Authorization:'Bearer '+t}});if(!r.ok)return;const d=await r.json();const list=Array.isArray(d)?d:(d.players||d.ratings||d.results||[]);for(const p of list){const name=p?.name||p?.player_name||p?.fullName;const o=Number(p?.overall??p?.ovr??p?.rating);if(name&&Number.isFinite(o))ratings.set(norm(name),Math.round(o));}window.SHOW_LIVE_RATINGS_READY=ratings.size>0;apply()}catch(e){console.warn('Live Series OVR unavailable',e)}
-}
-document.addEventListener('click',e=>{const row=e.target.closest('#roster tr.row,#opRoster tr.row,#waiverRows tr.row');if(!row)return;const name=nameOf(row),id=row.dataset.espnId||ids.get(norm(name));if(!id)return;e.preventDefault();e.stopImmediatePropagation();window.open(espn(id,name),'_blank','noopener,noreferrer')},true);
-const obs=new MutationObserver(apply);
-function start(){obs.observe(document.body,{subtree:true,childList:true});loadIds();loadRatings();setTimeout(loadIds,1000);setTimeout(loadRatings,1500);setInterval(apply,750);setInterval(loadRatings,120000)}
+function initials(n){return String(n||'').split(/\s+/).filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase()||'—'}
+function tone(o){return o>=90?'showdd-elite':o>=85?'showdd-diamond':o>=80?'showdd-gold':o>=70?'showdd-silver':o>=60?'showdd-bronze':'showdd-common'}
+function css(){if(document.getElementById('classic-live-series'))return;const s=document.createElement('style');s.id='classic-live-series';s.textContent=`
+.showdd-player{display:flex;align-items:center;gap:16px;color:inherit;text-decoration:none}.showdd-avatar{width:56px;height:56px;border-radius:12px;border:1px solid #35516a;background:#142a3d;display:grid;place-items:center;font-weight:900;font-size:17px;flex:none}.showdd-info{min-width:0}.showdd-top{display:flex;align-items:center;gap:12px}.showdd-name{font-size:17px;font-weight:900;white-space:nowrap}.showdd-ovr{min-width:46px;height:38px;border-radius:8px;border:1px solid #49657b;display:grid;place-items:center;font-weight:950;font-size:18px;background:#293d4d;color:#eef6ff}.showdd-sub{margin-top:6px;color:#91a7bb;font-size:13px}.showdd-elite{background:#b42335}.showdd-diamond{background:#4f6fa8}.showdd-gold{background:#a98222}.showdd-silver{background:#607080}.showdd-bronze{background:#7a563d}.showdd-common{background:#293d4d}`;document.head.appendChild(s)}
+async function load(players=[]){try{const names=(players||[]).map(p=>typeof p==='string'?p:p?.name).filter(Boolean);const q=names.length?'?'+names.map(n=>'names='+encodeURIComponent(n)).join('&'):'';const r=await fetch('/api/show/live-ratings'+q,{cache:'no-store'});if(!r.ok)return;const d=await r.json(),rows=Array.isArray(d)?d:(d.players||d.ratings||d.data||[]);for(const p of rows){const n=p.name||p.fullName||p.full_name||p.playerName,o=Number(p.overall??p.ovr??p.rating??p.overall_rating);if(n&&Number.isFinite(o))ratings.set(norm(n),Math.round(o))}window.SHOW_LIVE_RATINGS_READY=ratings.size>0;window.dispatchEvent(new CustomEvent('show-live-ratings-ready'))}catch(e){console.warn('Live Series ratings unavailable',e)}}
+function ovr(p){const d=Number(p?.show_ovr??p?.mlb_the_show_ovr);if(Number.isFinite(d))return Math.round(d);const x=ratings.get(norm(p?.name));return Number.isFinite(x)?x:null}
+function install(){css();window.showOvr=ovr;window.loadShowLiveRatings=load;window.SHOW_LIVE_URL='https://www.theshowbase.com/series/live';window.playerRow=(p,w=false)=>{const sc=window.statusClass?window.statusClass(p):['ACTIVE','active'],st=sc[0],cl=sc[1],name=p?.name||'Player',o=ovr(p),url=espn(p?.id,name),pts=p?.total_points??p?.applied_stat_total??p?.average_points;return `<tr class="row"><td><a class="showdd-player" href="${esc(url)}" target="_blank" rel="noopener noreferrer"><div class="showdd-avatar">${esc(initials(name))}</div><div class="showdd-info"><div class="showdd-top"><div class="showdd-name">${esc(name)}</div><div class="showdd-ovr ${Number.isFinite(o)?tone(o):''}" data-show-ovr="${Number.isFinite(o)?o:''}">${Number.isFinite(o)?o:'—'}</div></div><div class="showdd-sub">Live Series</div></div></a></td><td><span class="pos">${esc(window.pos?window.pos(p):(p?.position||'—'))}</span></td><td><span class="sub">${esc(window.elig?window.elig(p):((p?.eligible_positions||[]).join(' · ')||'—'))}${p?.lineup_slot?' · '+esc(p.lineup_slot):''}</span></td><td><span class="badge ${esc(cl)}">${esc(st)}</span></td>${w?`<td>${p?.percent_owned==null?'—':esc(Number(p.percent_owned).toFixed(1))+'%'}</td>`:''}<td class="pts">${pts==null?'—':esc(Number(pts).toFixed(1))}</td></tr>`};}
+function repaint(){document.querySelectorAll('.showdd-player').forEach(a=>{const name=a.querySelector('.showdd-name')?.textContent||'',box=a.querySelector('.showdd-ovr'),o=ratings.get(norm(name));if(box&&Number.isFinite(o)){box.textContent=String(o);box.className='showdd-ovr '+tone(o);box.dataset.showOvr=String(o)}})}
+function start(){install();load();setTimeout(load,800);setTimeout(load,2500);window.addEventListener('show-live-ratings-ready',repaint);new MutationObserver(repaint).observe(document.body,{subtree:true,childList:true})}
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});else start();
 })();
