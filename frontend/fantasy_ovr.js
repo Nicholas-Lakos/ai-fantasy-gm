@@ -1,91 +1,10 @@
 (()=>{
-const norm=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9 ]/gi,'').replace(/\s+/g,' ').trim().toLowerCase();
-const cls=o=>o>=90?'ovr-elite':o>=80?'ovr-great':o>=70?'ovr-good':o>=60?'ovr-average':o>=50?'ovr-below':'ovr-poor';
-let ratings=new Map(),loading=false,currentSeason=2026;
-function token(){
-  const keys=['gm_token','token','auth_token','access_token','jwt','authToken','fantasy_gm_token','fantasyGMToken'];
-  for(const k of keys){try{const v=localStorage.getItem(k)||sessionStorage.getItem(k);if(v&&v.split('.').length===3)return v}catch{}}
-  try{for(const store of [localStorage,sessionStorage])for(let i=0;i<store.length;i++){const v=store.getItem(store.key(i));if(v&&v.split('.').length===3)return v}}catch{}
-  return '';
-}
-function rowName(row){const e=row.querySelector('.pn,.showdd-name');return e?String(e.textContent||'').trim():''}
-function fantasyPtsCell(row){
-  const headers=[...row.closest('table')?.querySelectorAll('thead th')||[]].map(x=>String(x.textContent||'').trim().toLowerCase());
-  const i=headers.findIndex(x=>x.includes('fantasy pts')||x.includes('fantasy points')||x.includes('season pts'));
-  const cells=row.querySelectorAll('td');
-  return cells[i>=0?i:cells.length-1]||null;
-}
-function paintSeasonAverage(row,data){
-  const cell=fantasyPtsCell(row);if(!cell||!data)return;
-  const total=Number(data.total_points);
-  const avg=Number(data.season_average);
-  if(!Number.isFinite(avg))return;
-  let main=cell.querySelector('.fpts-per-game');
-  let detail=cell.querySelector('.fpts-season-detail');
-  if(!main){cell.replaceChildren();main=document.createElement('div');main.className='pts fpts-per-game';cell.appendChild(main)}
-  if(!detail){detail=document.createElement('div');detail.className='sub fpts-season-detail';cell.appendChild(detail)}
-  main.textContent=avg.toFixed(1)+' FPTS/G';
-  detail.textContent=Number.isFinite(total)?total.toFixed(1)+' season pts':'ESPN league season average';
-  detail.title='ESPN Fantasy Pts AVG for the connected league';
-}
-function paint(){
-  document.querySelectorAll('#roster tr.row,#opRoster tr.row,#waiverRows tr.row').forEach(row=>{
-    const name=rowName(row),data=ratings.get(norm(name));
-    if(!name||!data)return;
-    paintSeasonAverage(row,data);
-    const o=Number(data.fantasy_ovr);if(!Number.isFinite(o))return;
-    const avatar=row.querySelector('.avatar');
-    if(avatar){avatar.textContent=String(o);avatar.className='avatar '+cls(o);avatar.dataset.fantasyOvr=String(o);avatar.removeAttribute('data-show-ovr');avatar.title='Fantasy OVR calculated from ESPN stats'}
-    const showOvr=row.querySelector('.showdd-ovr');
-    if(showOvr){showOvr.textContent=String(o);showOvr.className='showdd-ovr '+(o>=90?'showdd-elite':o>=80?'showdd-diamond':o>=70?'showdd-gold':o>=60?'showdd-silver':'showdd-bronze');showOvr.title='Fantasy OVR calculated from ESPN season stats';showOvr.dataset.fantasyOvr=String(o)}
-    const pn=row.querySelector('.pn,.showdd-name');const sub=pn?.parentElement?.querySelector('.sub,.showdd-sub');
-    if(sub){sub.textContent='ESPN Fantasy OVR '+o+' · '+(data.total_points??'—')+' season pts';sub.title='Calculated from ESPN fantasy stats.'}
-  });
-}
-function mergePlayers(players){
-  for(const p of players||[]){if(!p||!p.name)continue;const key=norm(p.name),old=ratings.get(key)||{};ratings.set(key,{...old,...p})}
-}
-async function load(){
-  if(loading)return false;
-  const t=token();
-  if(!t){window.FANTASY_OVR_ERROR='No JWT found in browser storage';return false}
-  loading=true;
-  try{
-    const [ovrResp,dashResp]=await Promise.all([
-      fetch('/api/fantasy-ovr?ts='+Date.now(),{cache:'no-store',credentials:'include',headers:{Authorization:'Bearer '+t}}),
-      fetch('/dashboard?ts='+Date.now(),{cache:'no-store',credentials:'include',headers:{Authorization:'Bearer '+t}})
-    ]);
-    if(!ovrResp.ok)throw new Error('Fantasy OVR API HTTP '+ovrResp.status);
-    const d=await ovrResp.json();
-    currentSeason=Number(d.season)||currentSeason;
-    window.FANTASY_OVR_SOURCE=d.source||'ESPN Fantasy Baseball statistics';
-    const players=Array.isArray(d.players)?d.players:[];
-    ratings=new Map();
-    mergePlayers(players);
-    if(dashResp.ok){
-      try{
-        const dash=await dashResp.json();
-        for(const team of dash.teams||[]){mergePlayers(team.roster||[])}
-      }catch{}
-    }
-    window.FANTASY_OVR_READY=ratings.size>0;
-    window.FANTASY_OVR_COUNT=ratings.size;
-    window.FANTASY_OVR_ERROR='';
-    paint();
-    return ratings.size>0;
-  }catch(e){window.FANTASY_OVR_READY=false;window.FANTASY_OVR_ERROR=String(e.message||e);console.warn('Fantasy OVR unavailable:',e);return false}
-  finally{loading=false}
-}
-function removeLegacy(){document.querySelectorAll('.live-ovr-badge,.live-label,.showdd-live').forEach(e=>e.remove())}
-function start(){
-  removeLegacy();
-  const observer=new MutationObserver(()=>{removeLegacy();paint()});
-  observer.observe(document.body,{subtree:true,childList:true});
-  load();
-  [500,1500,3000,6000,10000].forEach(ms=>setTimeout(load,ms));
-  setInterval(()=>{removeLegacy();paint()},500);
-  setInterval(load,120000);
-}
-window.refreshFantasyOVR=load;
-if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});else start();
+// Legacy ESPN Fantasy OVR renderer disabled.
+// The active roster presentation and Live Series ratings are handled by
+// live_ovr_display.js. Keeping the old MutationObserver, 500ms repaint loop,
+// retry timers, and duplicate dashboard/API requests caused unnecessary main-
+// thread work and could make the browser report that the page stopped responding.
+window.FANTASY_OVR_READY=false;
+window.FANTASY_OVR_DISABLED=true;
+window.refreshFantasyOVR=async()=>false;
 })();
